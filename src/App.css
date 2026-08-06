@@ -311,6 +311,18 @@ button {
   opacity: 0.8;
 }
 
+.movie-player {
+  display: flex;
+  justify-content: center;
+}
+
+.movie-player video {
+  max-width: 100%;
+  max-height: 60vh;
+  border-radius: 8px;
+  background-color: #000;
+}
+
 .audio-panel {
   padding: 0.75em 1em;
   background-color: #ffffff;

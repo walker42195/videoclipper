@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { dirname } from "@tauri-apps/api/path";
 import { useProjectStore } from "./state/projectStore";
 import { exportProject, probeClip } from "./lib/tauriCommands";
 import { Clip, ExportProgress } from "./types";
 import { Timeline } from "./components/Timeline/Timeline";
 import { MovieAudioPanel } from "./components/AudioPanel/MovieAudioPanel";
 import "./App.css";
+
+const LAST_IMPORT_DIR_KEY = "videoclipper:lastImportDir";
 
 function fileNameFromPath(path: string): string {
   return path.split(/[/\\]/).pop() ?? path;
@@ -23,6 +27,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [progress, setProgress] = useState<ExportProgress | null>(null);
+  const [exportedMoviePath, setExportedMoviePath] = useState<string | null>(null);
 
   useEffect(() => {
     const unlisten = listen<ExportProgress>("export://progress", (event) => {
@@ -36,10 +41,13 @@ function App() {
   async function handleAddClips() {
     const selected = await open({
       multiple: true,
+      defaultPath: localStorage.getItem(LAST_IMPORT_DIR_KEY) ?? undefined,
       filters: [{ name: "Video", extensions: ["mp4", "mov", "mkv", "avi", "webm"] }],
     });
     if (!selected) return;
     const paths = Array.isArray(selected) ? selected : [selected];
+
+    localStorage.setItem(LAST_IMPORT_DIR_KEY, await dirname(paths[0]));
 
     setStatusMessage(`Läser in ${paths.length} klipp...`);
     for (const path of paths) {
@@ -74,10 +82,12 @@ function App() {
 
     setBusy(true);
     setProgress(null);
+    setExportedMoviePath(null);
     setStatusMessage("Exporterar...");
     try {
       const result = await exportProject(clips, transitions, movieAudioOverride, exportSettings, outputPath);
       setStatusMessage(`Klart! Sparad till ${result.outputPath}`);
+      setExportedMoviePath(result.outputPath);
     } catch (err) {
       setStatusMessage(`Export misslyckades: ${err}`);
     } finally {
@@ -117,6 +127,12 @@ function App() {
       )}
 
       {statusMessage && <p className="status-message">{statusMessage}</p>}
+
+      {exportedMoviePath && (
+        <div className="movie-player">
+          <video controls src={convertFileSrc(exportedMoviePath)} />
+        </div>
+      )}
     </main>
   );
 }
