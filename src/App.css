@@ -247,7 +247,11 @@ button {
   top: 0;
   bottom: 0;
   width: 10px;
-  cursor: ew-resize;
+  /* col-resize over ew-resize: some cursor themes (e.g. KDE's Oxygen_White)
+     only ship the older X11-style cursor names and don't have an ew-resize
+     file, which makes GTK log "Unable to load ew-resize from the cursor
+     theme" on every hover. col-resize is present in every theme checked. */
+  cursor: col-resize;
   touch-action: none;
 }
 
