@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { RefObject, useRef } from "react";
 import { useProjectStore } from "../../state/projectStore";
 import { useBlobUrl } from "../../lib/useBlobUrl";
 import { Clip } from "../../types";
@@ -16,11 +16,21 @@ function formatSeconds(sec: number): string {
 
 interface TrimControlsProps {
   clip: Clip;
-  currentTime: number;
+  videoRef: RefObject<HTMLVideoElement | null>;
   onTrimChange: (id: string, trimInSec: number, trimOutSec: number) => void;
 }
 
-function TrimControls({ clip, currentTime, onTrimChange }: TrimControlsProps) {
+function TrimControls({ clip, videoRef, onTrimChange }: TrimControlsProps) {
+  // Read the video's position live at click-time rather than trusting a
+  // React state value kept in sync via onTimeUpdate - that event only
+  // fires while the video is actively playing/seeking, so if autoplay
+  // got silently blocked (WebKit blocks unmuted autoplay without a user
+  // gesture) the state would stay stuck at 0 forever even though the
+  // player itself knows its real position.
+  function playheadSec(): number {
+    return videoRef.current?.currentTime ?? 0;
+  }
+
   function adjustStart(deltaSec: number) {
     const next = Math.min(Math.max(0, clip.trimInSec + deltaSec), clip.trimOutSec - MIN_CLIP_DURATION_SEC);
     onTrimChange(clip.id, next, clip.trimOutSec);
@@ -33,10 +43,10 @@ function TrimControls({ clip, currentTime, onTrimChange }: TrimControlsProps) {
     onTrimChange(clip.id, clip.trimInSec, next);
   }
   function setStartToPlayhead() {
-    onTrimChange(clip.id, Math.min(currentTime, clip.trimOutSec - MIN_CLIP_DURATION_SEC), clip.trimOutSec);
+    onTrimChange(clip.id, Math.min(playheadSec(), clip.trimOutSec - MIN_CLIP_DURATION_SEC), clip.trimOutSec);
   }
   function setEndToPlayhead() {
-    onTrimChange(clip.id, clip.trimInSec, Math.max(currentTime, clip.trimInSec + MIN_CLIP_DURATION_SEC));
+    onTrimChange(clip.id, clip.trimInSec, Math.max(playheadSec(), clip.trimInSec + MIN_CLIP_DURATION_SEC));
   }
 
   return (
@@ -68,7 +78,6 @@ function TrimControls({ clip, currentTime, onTrimChange }: TrimControlsProps) {
 export function ClipPreviewPlayer() {
   const { clips, previewClipId, setPreviewClipId, updateClipTrim } = useProjectStore();
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [currentTime, setCurrentTime] = useState(0);
   const clip = clips.find((c) => c.id === previewClipId);
   const blobUrl = useBlobUrl(clip?.sourcePath ?? null);
 
@@ -94,10 +103,9 @@ export function ClipPreviewPlayer() {
           if (video.currentTime >= clip.trimOutSec) {
             video.currentTime = clip.trimInSec;
           }
-          setCurrentTime(video.currentTime);
         }}
       />
-      <TrimControls clip={clip} currentTime={currentTime} onTrimChange={updateClipTrim} />
+      <TrimControls clip={clip} videoRef={videoRef} onTrimChange={updateClipTrim} />
     </div>
   );
 }
