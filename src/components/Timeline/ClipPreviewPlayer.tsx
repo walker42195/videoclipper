@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { useProjectStore } from "../../state/projectStore";
+import { useBlobUrl } from "../../lib/useBlobUrl";
 import { Clip } from "../../types";
 
 const STEP_SEC = 1;
@@ -70,6 +70,7 @@ export function ClipPreviewPlayer() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const clip = clips.find((c) => c.id === previewClipId);
+  const blobUrl = useBlobUrl(clip?.sourcePath ?? null);
 
   if (!clip) return null;
 
@@ -82,7 +83,7 @@ export function ClipPreviewPlayer() {
       <video
         key={clip.id}
         ref={videoRef}
-        src={convertFileSrc(clip.sourcePath)}
+        src={blobUrl ?? undefined}
         controls
         autoPlay
         onLoadedMetadata={() => {

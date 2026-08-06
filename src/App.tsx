@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { dirname } from "@tauri-apps/api/path";
 import { useProjectStore } from "./state/projectStore";
 import { exportProject, probeClip } from "./lib/tauriCommands";
+import { useBlobUrl } from "./lib/useBlobUrl";
 import { Clip, ExportProgress } from "./types";
 import { Timeline } from "./components/Timeline/Timeline";
 import { ClipPreviewPlayer } from "./components/Timeline/ClipPreviewPlayer";
@@ -29,6 +29,7 @@ function App() {
   const [statusMessage, setStatusMessage] = useState("");
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [exportedMoviePath, setExportedMoviePath] = useState<string | null>(null);
+  const exportedMovieUrl = useBlobUrl(exportedMoviePath);
 
   useEffect(() => {
     const unlisten = listen<ExportProgress>("export://progress", (event) => {
@@ -131,9 +132,9 @@ function App() {
 
       {statusMessage && <p className="status-message">{statusMessage}</p>}
 
-      {exportedMoviePath && (
+      {exportedMovieUrl && (
         <div className="movie-player">
-          <video controls src={convertFileSrc(exportedMoviePath)} />
+          <video controls src={exportedMovieUrl} />
         </div>
       )}
     </main>

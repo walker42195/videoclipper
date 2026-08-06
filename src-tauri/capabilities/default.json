@@ -9,6 +9,10 @@
     "dialog:default",
     "fs:default",
     {
+      "identifier": "fs:allow-read-file",
+      "allow": [{ "path": "$HOME/**/*" }]
+    },
+    {
       "identifier": "shell:allow-execute",
       "allow": [
         { "name": "binaries/ffmpeg", "sidecar": true, "args": true },
