@@ -323,6 +323,48 @@ button {
   background-color: #000;
 }
 
+.clip-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.clip-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 480px;
+  font-size: 0.9em;
+  opacity: 0.85;
+}
+
+.clip-preview-header span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.clip-preview-header button {
+  padding: 0.25em 0.7em;
+  font-size: 0.8em;
+}
+
+.clip-preview video {
+  max-width: 480px;
+  width: 100%;
+  max-height: 40vh;
+  border-radius: 8px;
+  background-color: #000;
+}
+
+.clip-card-previewing {
+  outline: 2px solid #396cd8;
+}
+
 .audio-panel {
   padding: 0.75em 1em;
   background-color: #ffffff;

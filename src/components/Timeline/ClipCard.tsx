@@ -3,6 +3,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Clip } from "../../types";
 import { extractThumbnail } from "../../lib/tauriCommands";
+import { useProjectStore } from "../../state/projectStore";
 
 const MIN_CLIP_DURATION_SEC = 0.2;
 
@@ -29,6 +30,7 @@ export function ClipCard({ clip, index, onRemove, onTrimChange }: ClipCardProps)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: clip.id,
   });
+  const { previewClipId, setPreviewClipId } = useProjectStore();
 
   const [thumbnail, setThumbnail] = useState<string | null>(null);
   const dragState = useRef<{
@@ -106,9 +108,17 @@ export function ClipCard({ clip, index, onRemove, onTrimChange }: ClipCardProps)
   const canTrimIn = clip.trimInSec > 0;
   const canTrimOut = clip.trimOutSec < clip.sourceDurationSec;
 
+  const isPreviewing = clip.id === previewClipId;
+
   return (
-    <div ref={setNodeRef} style={style} className="clip-card">
-      <div className="clip-card-drag-handle" {...attributes} {...listeners}>
+    <div ref={setNodeRef} style={style} className={`clip-card ${isPreviewing ? "clip-card-previewing" : ""}`}>
+      <div
+        className="clip-card-drag-handle"
+        {...attributes}
+        {...listeners}
+        onClick={() => setPreviewClipId(clip.id)}
+        title="Klicka för att förhandsgranska"
+      >
         <span className="clip-index">{index + 1}</span>
         <div className="clip-thumbnail">
           {thumbnail ? <img src={thumbnail} alt="" /> : <div className="clip-thumbnail-placeholder" />}

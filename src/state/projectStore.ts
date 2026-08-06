@@ -24,6 +24,8 @@ interface ProjectState {
   transitions: Transition[];
   movieAudioOverride: MovieAudioOverride | null;
   exportSettings: ExportSettings;
+  /** Which clip is currently shown in the preview player. */
+  previewClipId: string | null;
   addClip: (clip: Clip) => void;
   removeClip: (id: string) => void;
   moveClip: (fromIndex: number, toIndex: number) => void;
@@ -32,6 +34,7 @@ interface ProjectState {
   clearTransition: (fromClipId: string, toClipId: string) => void;
   setMovieAudioOverride: (override: MovieAudioOverride | null) => void;
   setExportSettings: (settings: ExportSettings) => void;
+  setPreviewClipId: (id: string | null) => void;
 }
 
 export const useProjectStore = create<ProjectState>((set) => ({
@@ -40,11 +43,17 @@ export const useProjectStore = create<ProjectState>((set) => ({
   transitions: [],
   movieAudioOverride: null,
   exportSettings: DEFAULT_EXPORT_SETTINGS,
-  addClip: (clip) => set((s) => ({ clips: [...s.clips, clip] })),
+  previewClipId: null,
+  // Preview the clip you just added so you can immediately check it looks right.
+  addClip: (clip) => set((s) => ({ clips: [...s.clips, clip], previewClipId: clip.id })),
   removeClip: (id) =>
     set((s) => {
       const clips = s.clips.filter((c) => c.id !== id);
-      return { clips, transitions: pruneInvalidTransitions(clips, s.transitions) };
+      return {
+        clips,
+        transitions: pruneInvalidTransitions(clips, s.transitions),
+        previewClipId: s.previewClipId === id ? null : s.previewClipId,
+      };
     }),
   moveClip: (fromIndex, toIndex) =>
     set((s) => {
@@ -70,4 +79,5 @@ export const useProjectStore = create<ProjectState>((set) => ({
     })),
   setMovieAudioOverride: (movieAudioOverride) => set({ movieAudioOverride }),
   setExportSettings: (exportSettings) => set({ exportSettings }),
+  setPreviewClipId: (previewClipId) => set({ previewClipId }),
 }));

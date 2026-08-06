@@ -7,6 +7,7 @@ import { useProjectStore } from "./state/projectStore";
 import { exportProject, probeClip } from "./lib/tauriCommands";
 import { Clip, ExportProgress } from "./types";
 import { Timeline } from "./components/Timeline/Timeline";
+import { ClipPreviewPlayer } from "./components/Timeline/ClipPreviewPlayer";
 import { MovieAudioPanel } from "./components/AudioPanel/MovieAudioPanel";
 import "./App.css";
 
@@ -110,6 +111,8 @@ function App() {
         </button>
         <span className="total-duration">Total längd: {formatDuration(totalDuration)}</span>
       </div>
+
+      <ClipPreviewPlayer />
 
       <Timeline />
 
