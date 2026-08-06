@@ -361,6 +361,32 @@ button {
   background-color: #000;
 }
 
+.trim-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+  max-width: 480px;
+}
+
+.trim-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85em;
+}
+
+.trim-controls-label {
+  min-width: 90px;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+.trim-controls-row button {
+  padding: 0.3em 0.6em;
+  font-size: 0.85em;
+}
+
 .clip-card-previewing {
   outline: 2px solid #396cd8;
 }
