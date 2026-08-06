@@ -1,5 +1,12 @@
 import { create } from "zustand";
-import { Clip, DEFAULT_EXPORT_SETTINGS, ExportSettings, Transition, TransitionType } from "../types";
+import {
+  Clip,
+  DEFAULT_EXPORT_SETTINGS,
+  ExportSettings,
+  MovieAudioOverride,
+  Transition,
+  TransitionType,
+} from "../types";
 
 /** Drop transitions whose two clip ids are no longer adjacent in `clips` -
  * call this after every reorder/removal so stale junctions don't linger. */
@@ -15,6 +22,7 @@ interface ProjectState {
   name: string;
   clips: Clip[];
   transitions: Transition[];
+  movieAudioOverride: MovieAudioOverride | null;
   exportSettings: ExportSettings;
   addClip: (clip: Clip) => void;
   removeClip: (id: string) => void;
@@ -22,6 +30,7 @@ interface ProjectState {
   updateClipTrim: (id: string, trimInSec: number, trimOutSec: number) => void;
   setTransition: (fromClipId: string, toClipId: string, type: TransitionType, durationSec: number) => void;
   clearTransition: (fromClipId: string, toClipId: string) => void;
+  setMovieAudioOverride: (override: MovieAudioOverride | null) => void;
   setExportSettings: (settings: ExportSettings) => void;
 }
 
@@ -29,6 +38,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
   name: "Namnlöst projekt",
   clips: [],
   transitions: [],
+  movieAudioOverride: null,
   exportSettings: DEFAULT_EXPORT_SETTINGS,
   addClip: (clip) => set((s) => ({ clips: [...s.clips, clip] })),
   removeClip: (id) =>
@@ -58,5 +68,6 @@ export const useProjectStore = create<ProjectState>((set) => ({
     set((s) => ({
       transitions: s.transitions.filter((t) => !(t.fromClipId === fromClipId && t.toClipId === toClipId)),
     })),
+  setMovieAudioOverride: (movieAudioOverride) => set({ movieAudioOverride }),
   setExportSettings: (exportSettings) => set({ exportSettings }),
 }));

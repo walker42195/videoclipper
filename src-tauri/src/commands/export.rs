@@ -1,8 +1,9 @@
 use crate::ffmpeg::filtergraph::{
-    build_transition_graph, GraphClip, NormalizeTarget, TransitionJunction, CUT_DURATION_SEC,
+    build_background_music_chain, build_transition_graph, BackgroundMusicSpec, GraphClip,
+    NormalizeTarget, TransitionJunction, CUT_DURATION_SEC,
 };
 use crate::ffmpeg::progress::ProgressParser;
-use crate::model::{Clip, ExportSettings, Transition, TransitionType};
+use crate::model::{Clip, ExportSettings, MovieAudioOverride, Transition, TransitionType};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
@@ -15,6 +16,7 @@ pub struct ExportRequest {
     /// entry here (matched by fromClipId/toClipId). Missing junctions render
     /// as a hard cut (see [`CUT_DURATION_SEC`]).
     pub transitions: Vec<Transition>,
+    pub movie_audio_override: Option<MovieAudioOverride>,
     pub export_settings: ExportSettings,
     pub output_path: String,
 }
@@ -77,7 +79,7 @@ pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<Ex
         .collect();
 
     let junctions = resolve_junctions(&request.clips, &request.transitions);
-    let (filter_complex, maps, total_duration_sec) =
+    let (mut filter_complex, mut maps, total_duration_sec) =
         build_transition_graph(&graph_clips, target, &junctions);
 
     let mut args: Vec<String> = vec!["-y".into()];
@@ -85,6 +87,38 @@ pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<Ex
         args.push("-i".into());
         args.push(clip.source_path.clone());
     }
+
+    if let Some(movie_audio) = &request.movie_audio_override {
+        let music_input_index = request.clips.len();
+        args.push("-i".into());
+        args.push(movie_audio.source_path.clone());
+
+        // If the timeline had audio, its "-map" "[aout]" pair is replaced by
+        // the mixed/replaced track below rather than mapped twice.
+        let base_audio_label = maps.iter().position(|m| m == "[aout]").map(|pos| {
+            maps.drain(pos - 1..=pos);
+            "aout".to_string()
+        });
+
+        let spec = BackgroundMusicSpec {
+            input_index: music_input_index,
+            blend_mode: movie_audio.blend_mode,
+            fill_mode: movie_audio.fill_mode,
+            gain_db: movie_audio.gain_db,
+            fade_in_sec: movie_audio.fade_in_sec,
+            fade_out_sec: movie_audio.fade_out_sec,
+        };
+        filter_complex.push_str(&build_background_music_chain(
+            &spec,
+            base_audio_label.as_deref(),
+            total_duration_sec,
+            48000,
+            "finalaudio",
+        ));
+        maps.push("-map".into());
+        maps.push("[finalaudio]".into());
+    }
+
     args.push("-filter_complex".into());
     args.push(filter_complex);
     args.extend(maps);

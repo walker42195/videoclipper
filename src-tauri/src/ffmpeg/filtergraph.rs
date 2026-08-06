@@ -3,7 +3,7 @@
 //! `filter_complex` graph. Kept dependency-free so it can be unit tested
 //! without spawning any subprocess.
 
-use crate::model::TransitionType;
+use crate::model::{AudioBlendMode, AudioMode, TransitionType};
 
 /// Junctions with no user-chosen transition are still built through the
 /// xfade/acrossfade chain (rather than falling back to `concat`) so the
@@ -309,6 +309,68 @@ pub fn build_transition_graph(
     (graph, maps, total_duration_sec)
 }
 
+/// A whole-movie background-music track to layer onto (or replace) the
+/// timeline's existing audio, going into [`build_background_music_chain`].
+#[derive(Debug, Clone, Copy)]
+pub struct BackgroundMusicSpec {
+    pub input_index: usize,
+    pub blend_mode: AudioBlendMode,
+    pub fill_mode: AudioMode,
+    pub gain_db: f64,
+    pub fade_in_sec: f64,
+    pub fade_out_sec: f64,
+}
+
+/// Builds the filter_complex fragment that layers a background-music input
+/// onto `base_audio_label` (the `"aout"` label from [`build_transition_graph`],
+/// or `None` if the timeline has no audio at all) and produces
+/// `output_label`. In [`AudioBlendMode::Replace`] mode `base_audio_label` is
+/// ignored entirely; in [`AudioBlendMode::Mix`] mode with no base audio,
+/// mixing degrades to just using the music track (nothing to mix with).
+pub fn build_background_music_chain(
+    spec: &BackgroundMusicSpec,
+    base_audio_label: Option<&str>,
+    total_duration_sec: f64,
+    sample_rate: u32,
+    output_label: &str,
+) -> String {
+    const MUSIC_LABEL: &str = "bgmusic";
+
+    let fill = match spec.fill_mode {
+        AudioMode::Loop => "aloop=loop=-1:size=2147483647,",
+        AudioMode::Pad => "apad,",
+    };
+    let fade_out_start = (total_duration_sec - spec.fade_out_sec).max(0.0);
+
+    let mut graph = format!(
+        "[{i}:a]aformat=sample_rates={sr}:channel_layouts=stereo,{fill}atrim=0:{dur},\
+         asetpts=PTS-STARTPTS,volume={gain}dB,afade=t=in:d={fadein},\
+         afade=t=out:st={fadeoutstart}:d={fadeout}[{label}];\n",
+        i = spec.input_index,
+        sr = sample_rate,
+        fill = fill,
+        dur = total_duration_sec,
+        gain = spec.gain_db,
+        fadein = spec.fade_in_sec,
+        fadeoutstart = fade_out_start,
+        fadeout = spec.fade_out_sec,
+        label = MUSIC_LABEL,
+    );
+
+    match (spec.blend_mode, base_audio_label) {
+        (AudioBlendMode::Mix, Some(base)) => {
+            graph.push_str(&format!(
+                "[{base}][{MUSIC_LABEL}]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[{output_label}];\n"
+            ));
+        }
+        (AudioBlendMode::Replace, _) | (AudioBlendMode::Mix, None) => {
+            graph.push_str(&format!("[{MUSIC_LABEL}]anull[{output_label}];\n"));
+        }
+    }
+
+    graph
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,6 +531,55 @@ mod tests {
         ];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let _ = build_transition_graph(&clips, target, &[]);
+    }
+
+    #[test]
+    fn background_music_mix_mode_mixes_with_base_audio() {
+        let spec = BackgroundMusicSpec {
+            input_index: 3,
+            blend_mode: AudioBlendMode::Mix,
+            fill_mode: AudioMode::Loop,
+            gain_db: -18.0,
+            fade_in_sec: 1.5,
+            fade_out_sec: 2.0,
+        };
+        let graph = build_background_music_chain(&spec, Some("aout"), 20.0, 48000, "finalaudio");
+        assert!(graph.contains("[3:a]aformat=sample_rates=48000:channel_layouts=stereo,aloop=loop=-1:size=2147483647,atrim=0:20"));
+        assert!(graph.contains("volume=-18dB"));
+        assert!(graph.contains("afade=t=in:d=1.5"));
+        assert!(graph.contains("afade=t=out:st=18:d=2"));
+        assert!(graph.contains("[aout][bgmusic]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[finalaudio]"));
+    }
+
+    #[test]
+    fn background_music_replace_mode_ignores_base_audio() {
+        let spec = BackgroundMusicSpec {
+            input_index: 2,
+            blend_mode: AudioBlendMode::Replace,
+            fill_mode: AudioMode::Pad,
+            gain_db: 0.0,
+            fade_in_sec: 0.0,
+            fade_out_sec: 0.0,
+        };
+        let graph = build_background_music_chain(&spec, Some("aout"), 10.0, 48000, "finalaudio");
+        assert!(!graph.contains("amix"));
+        assert!(!graph.contains("[aout]"));
+        assert!(graph.contains("[bgmusic]anull[finalaudio]"));
+    }
+
+    #[test]
+    fn background_music_mix_mode_with_no_base_audio_falls_back_to_music_only() {
+        let spec = BackgroundMusicSpec {
+            input_index: 1,
+            blend_mode: AudioBlendMode::Mix,
+            fill_mode: AudioMode::Loop,
+            gain_db: -6.0,
+            fade_in_sec: 0.5,
+            fade_out_sec: 0.5,
+        };
+        let graph = build_background_music_chain(&spec, None, 8.0, 48000, "finalaudio");
+        assert!(!graph.contains("amix"));
+        assert!(graph.contains("[bgmusic]anull[finalaudio]"));
     }
 
     #[test]

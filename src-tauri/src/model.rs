@@ -1,11 +1,22 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AudioMode {
     #[serde(rename = "loop")]
     Loop,
     #[serde(rename = "pad")]
     Pad,
+}
+
+/// How a whole-movie audio track combines with whatever audio the timeline
+/// already has (original per-clip audio, or per-clip overrides).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioBlendMode {
+    /// Drop all existing audio and use only this track.
+    Replace,
+    /// Keep existing audio and layer this track underneath it (e.g.
+    /// background music that doesn't remove the clips' own sound).
+    Mix,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,7 +92,9 @@ pub struct Transition {
 #[serde(rename_all = "camelCase")]
 pub struct MovieAudioOverride {
     pub source_path: String,
-    pub mode: AudioMode,
+    pub blend_mode: AudioBlendMode,
+    /// How to stretch the track to the movie's full length if it's shorter.
+    pub fill_mode: AudioMode,
     pub gain_db: f64,
     pub fade_in_sec: f64,
     pub fade_out_sec: f64,

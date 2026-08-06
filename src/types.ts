@@ -51,13 +51,30 @@ export interface Transition {
   durationSec: number;
 }
 
+export type AudioBlendMode = "Replace" | "Mix";
+
+export const AUDIO_BLEND_MODE_LABELS: Record<AudioBlendMode, string> = {
+  Replace: "Ersätt allt ljud",
+  Mix: "Mixa under befintligt ljud",
+};
+
 export interface MovieAudioOverride {
   sourcePath: string;
-  mode: AudioMode;
+  blendMode: AudioBlendMode;
+  fillMode: AudioMode;
   gainDb: number;
   fadeInSec: number;
   fadeOutSec: number;
 }
+
+export const DEFAULT_MOVIE_AUDIO: MovieAudioOverride = {
+  sourcePath: "",
+  blendMode: "Mix",
+  fillMode: "loop",
+  gainDb: -18,
+  fadeInSec: 1.5,
+  fadeOutSec: 2,
+};
 
 export interface ExportSettings {
   preset: string;
