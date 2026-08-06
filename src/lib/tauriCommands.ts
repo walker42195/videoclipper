@@ -9,6 +9,10 @@ export function probeClip(path: string): Promise<ClipMeta> {
   return invoke("probe_clip", { path });
 }
 
+export function extractThumbnail(path: string, atSeconds: number): Promise<string> {
+  return invoke("extract_thumbnail", { path, atSeconds });
+}
+
 export interface ExportResult {
   outputPath: string;
 }

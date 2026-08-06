@@ -1,5 +1,6 @@
-use crate::ffmpeg::sidecar::run_sidecar_capture;
+use crate::ffmpeg::sidecar::{run_sidecar_capture, run_sidecar_capture_bytes};
 use crate::model::ClipMeta;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 use tauri::AppHandle;
 
@@ -96,4 +97,31 @@ pub async fn probe_clip(app: AppHandle, path: String) -> Result<ClipMeta, String
             .unwrap_or(48000),
         has_audio: audio_stream.is_some(),
     })
+}
+
+/// Extracts a single JPEG frame at `at_seconds` and returns it as a
+/// `data:image/jpeg;base64,...` URL, small enough (~160px wide) to hand
+/// straight to an `<img>` tag without touching the filesystem/asset scope.
+#[tauri::command]
+pub async fn extract_thumbnail(app: AppHandle, path: String, at_seconds: f64) -> Result<String, String> {
+    let args = vec![
+        "-ss".into(),
+        at_seconds.max(0.0).to_string(),
+        "-i".into(),
+        path.clone(),
+        "-frames:v".into(),
+        "1".into(),
+        "-vf".into(),
+        "scale=160:-1".into(),
+        "-f".into(),
+        "image2".into(),
+        "-vcodec".into(),
+        "mjpeg".into(),
+        "pipe:1".into(),
+    ];
+    let (stdout, stderr, success) = run_sidecar_capture_bytes(&app, "ffmpeg", args).await?;
+    if !success || stdout.is_empty() {
+        return Err(format!("thumbnail extraction failed for '{path}': {stderr}"));
+    }
+    Ok(format!("data:image/jpeg;base64,{}", STANDARD.encode(&stdout)))
 }

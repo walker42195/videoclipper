@@ -4,12 +4,14 @@
 use tauri::AppHandle;
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
-/// Run a sidecar to completion and return (stdout, stderr, success).
-pub async fn run_sidecar_capture(
+/// Run a sidecar to completion and return raw (stdout, stderr, success).
+/// Use this over [`run_sidecar_capture`] when stdout is binary (e.g. piped
+/// image/video bytes) rather than text.
+pub async fn run_sidecar_capture_bytes(
     app: &AppHandle,
     name: &str,
     args: Vec<String>,
-) -> Result<(String, String, bool), String> {
+) -> Result<(Vec<u8>, String, bool), String> {
     let shell = app.shell();
     let sidecar = shell
         .sidecar(name)
@@ -34,9 +36,15 @@ pub async fn run_sidecar_capture(
         }
     }
 
-    Ok((
-        String::from_utf8_lossy(&stdout).to_string(),
-        String::from_utf8_lossy(&stderr).to_string(),
-        success,
-    ))
+    Ok((stdout, String::from_utf8_lossy(&stderr).to_string(), success))
+}
+
+/// Run a sidecar to completion and return (stdout, stderr, success) as text.
+pub async fn run_sidecar_capture(
+    app: &AppHandle,
+    name: &str,
+    args: Vec<String>,
+) -> Result<(String, String, bool), String> {
+    let (stdout, stderr, success) = run_sidecar_capture_bytes(app, name, args).await?;
+    Ok((String::from_utf8_lossy(&stdout).to_string(), stderr, success))
 }

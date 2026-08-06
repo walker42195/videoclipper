@@ -3,7 +3,7 @@ mod ffmpeg;
 mod model;
 
 use commands::export::export_project;
-use commands::probe::{ffmpeg_version, probe_clip};
+use commands::probe::{extract_thumbnail, ffmpeg_version, probe_clip};
 use commands::project::{load_project, save_project};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -16,6 +16,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ffmpeg_version,
             probe_clip,
+            extract_thumbnail,
             export_project,
             save_project,
             load_project,

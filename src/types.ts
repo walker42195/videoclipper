@@ -12,6 +12,8 @@ export interface AudioOverride {
 export interface Clip {
   id: string;
   sourcePath: string;
+  /** Full duration of the source file - the upper bound trimOutSec can't exceed. */
+  sourceDurationSec: number;
   trimInSec: number;
   trimOutSec: number;
   audioOverride: AudioOverride | null;

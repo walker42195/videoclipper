@@ -82,47 +82,126 @@ button {
   border-radius: 8px;
 }
 
-.clip-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.timeline {
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: stretch;
 }
 
-.clip-row {
+.clip-card {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.6em 1em;
+  width: 220px;
   background-color: #ffffff;
   border-radius: 8px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  touch-action: none;
+}
+
+.clip-card-drag-handle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: 1;
+  padding: 0.5em 1.6em 0.5em 0.6em;
+  cursor: grab;
+  overflow: hidden;
+}
+
+.clip-card-drag-handle:active {
+  cursor: grabbing;
 }
 
 .clip-index {
   font-variant-numeric: tabular-nums;
   opacity: 0.5;
-  width: 1.5em;
+  width: 1.2em;
+  flex-shrink: 0;
+}
+
+.clip-thumbnail {
+  width: 56px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  background-color: #ddd;
+}
+
+.clip-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.clip-thumbnail-placeholder {
+  width: 100%;
+  height: 100%;
+}
+
+.clip-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  text-align: left;
 }
 
 .clip-name {
-  flex: 1;
-  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 0.9em;
 }
 
 .clip-duration {
   font-variant-numeric: tabular-nums;
   opacity: 0.7;
+  font-size: 0.8em;
+}
+
+.trim-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.trim-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 40%;
+  border-radius: 2px;
+  background-color: #396cd8;
+  opacity: 0.6;
+}
+
+.trim-handle-disabled::after {
+  opacity: 0.2;
+}
+
+.trim-handle-in {
+  left: 0;
+}
+
+.trim-handle-out {
+  right: 0;
 }
 
 .remove-btn {
-  padding: 0.3em 0.8em;
-  font-size: 0.85em;
+  padding: 0.3em 0.6em;
+  font-size: 0.75em;
+  margin-right: 0.5em;
+  flex-shrink: 0;
 }
 
 .progress-overlay {
@@ -164,8 +243,12 @@ button {
     background-color: #0f0f0f69;
   }
 
-  .clip-row {
+  .clip-card {
     background-color: #0f0f0f98;
+  }
+
+  .clip-thumbnail {
+    background-color: #444;
   }
 
   .empty-state {

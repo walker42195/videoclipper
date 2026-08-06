@@ -8,6 +8,7 @@ interface ProjectState {
   addClip: (clip: Clip) => void;
   removeClip: (id: string) => void;
   moveClip: (fromIndex: number, toIndex: number) => void;
+  updateClipTrim: (id: string, trimInSec: number, trimOutSec: number) => void;
   setExportSettings: (settings: ExportSettings) => void;
 }
 
@@ -24,5 +25,9 @@ export const useProjectStore = create<ProjectState>((set) => ({
       next.splice(toIndex, 0, moved);
       return { clips: next };
     }),
+  updateClipTrim: (id, trimInSec, trimOutSec) =>
+    set((s) => ({
+      clips: s.clips.map((c) => (c.id === id ? { ...c, trimInSec, trimOutSec } : c)),
+    })),
   setExportSettings: (exportSettings) => set({ exportSettings }),
 }));

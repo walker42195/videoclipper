@@ -21,6 +21,9 @@ pub struct AudioOverride {
 pub struct Clip {
     pub id: String,
     pub source_path: String,
+    /// Full duration of the source file, as reported by probe_clip - the
+    /// upper bound trim handles in the UI can't drag `trim_out_sec` past.
+    pub source_duration_sec: f64,
     pub trim_in_sec: f64,
     pub trim_out_sec: f64,
     pub audio_override: Option<AudioOverride>,

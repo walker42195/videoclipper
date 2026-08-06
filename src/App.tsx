@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useProjectStore } from "./state/projectStore";
 import { exportProject, probeClip } from "./lib/tauriCommands";
 import { Clip, ExportProgress } from "./types";
+import { Timeline } from "./components/Timeline/Timeline";
 import "./App.css";
 
 function fileNameFromPath(path: string): string {
@@ -17,7 +18,7 @@ function formatDuration(sec: number): string {
 }
 
 function App() {
-  const { clips, addClip, removeClip, exportSettings } = useProjectStore();
+  const { clips, addClip, exportSettings } = useProjectStore();
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [progress, setProgress] = useState<ExportProgress | null>(null);
@@ -46,6 +47,7 @@ function App() {
         const clip: Clip = {
           id: crypto.randomUUID(),
           sourcePath: path,
+          sourceDurationSec: meta.durationSec,
           trimInSec: 0,
           trimOutSec: meta.durationSec,
           audioOverride: null,
@@ -98,24 +100,7 @@ function App() {
         <span className="total-duration">Total längd: {formatDuration(totalDuration)}</span>
       </div>
 
-      {clips.length === 0 ? (
-        <p className="empty-state">Inga klipp tillagda än. Klicka "Lägg till klipp" för att börja.</p>
-      ) : (
-        <ul className="clip-list">
-          {clips.map((clip, i) => (
-            <li key={clip.id} className="clip-row">
-              <span className="clip-index">{i + 1}</span>
-              <span className="clip-name">{fileNameFromPath(clip.sourcePath)}</span>
-              <span className="clip-duration">
-                {formatDuration(clip.trimOutSec - clip.trimInSec)}
-              </span>
-              <button onClick={() => removeClip(clip.id)} disabled={busy} className="remove-btn">
-                Ta bort
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <Timeline />
 
       {progress && (
         <div className="progress-overlay">
