@@ -1,0 +1,32 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { Clip, ClipMeta, ExportSettings, LoadProjectResultDto, Project } from "../types";
+
+export function ffmpegVersion(): Promise<string> {
+  return invoke("ffmpeg_version");
+}
+
+export function probeClip(path: string): Promise<ClipMeta> {
+  return invoke("probe_clip", { path });
+}
+
+export interface ExportResult {
+  outputPath: string;
+}
+
+export function exportProject(
+  clips: Clip[],
+  exportSettings: ExportSettings,
+  outputPath: string,
+): Promise<ExportResult> {
+  return invoke("export_project", {
+    request: { clips, exportSettings, outputPath },
+  });
+}
+
+export function saveProject(path: string, project: Project): Promise<void> {
+  return invoke("save_project", { path, project });
+}
+
+export function loadProject(path: string): Promise<LoadProjectResultDto> {
+  return invoke("load_project", { path });
+}
