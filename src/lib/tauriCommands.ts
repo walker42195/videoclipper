@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Clip, ClipMeta, ExportSettings, LoadProjectResultDto, Project } from "../types";
+import type { Clip, ClipMeta, ExportSettings, LoadProjectResultDto, Project, Transition } from "../types";
 
 export function ffmpegVersion(): Promise<string> {
   return invoke("ffmpeg_version");
@@ -19,11 +19,12 @@ export interface ExportResult {
 
 export function exportProject(
   clips: Clip[],
+  transitions: Transition[],
   exportSettings: ExportSettings,
   outputPath: string,
 ): Promise<ExportResult> {
   return invoke("export_project", {
-    request: { clips, exportSettings, outputPath },
+    request: { clips, transitions, exportSettings, outputPath },
   });
 }
 

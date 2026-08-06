@@ -86,8 +86,87 @@ button {
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: stretch;
+  align-items: center;
+}
+
+.timeline-item {
+  display: flex;
+  align-items: center;
+}
+
+.transition-badge-wrapper {
+  position: relative;
+  margin: 0 0.4rem;
+}
+
+.transition-badge {
+  padding: 0.25em 0.6em;
+  font-size: 0.75em;
+  border-radius: 999px;
+  background-color: #e8e8e8;
+  color: #444;
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+.transition-badge-active {
+  background-color: #396cd8;
+  color: #ffffff;
+}
+
+.transition-picker {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  margin-top: 0.4rem;
+  padding: 0.75rem;
+  width: 260px;
+  background-color: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  text-align: left;
+}
+
+.transition-picker-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+}
+
+.transition-option {
+  padding: 0.4em 0.5em;
+  font-size: 0.8em;
+  box-shadow: none;
+  background-color: #f0f0f0;
+}
+
+.transition-option-active {
+  background-color: #396cd8;
+  color: #ffffff;
+}
+
+.transition-duration-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85em;
+}
+
+.transition-picker-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.transition-picker-actions button {
+  flex: 1;
+  padding: 0.4em 0.5em;
+  font-size: 0.8em;
 }
 
 .clip-card {
@@ -257,5 +336,20 @@ button {
 
   .progress-bar-track {
     background-color: #444;
+  }
+
+  .transition-badge {
+    background-color: #0f0f0f98;
+    color: #ddd;
+  }
+
+  .transition-picker {
+    background-color: #2f2f2f;
+    border: 1px solid #555;
+  }
+
+  .transition-option {
+    background-color: #0f0f0f98;
+    color: #ffffff;
   }
 }

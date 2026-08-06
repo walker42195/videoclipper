@@ -35,7 +35,7 @@ impl Clip {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransitionType {
     Fade,
     Dissolve,

@@ -1,0 +1,55 @@
+import { useState } from "react";
+import { TRANSITION_LABELS, Transition, TransitionType } from "../../types";
+
+const TRANSITION_TYPES = Object.keys(TRANSITION_LABELS) as TransitionType[];
+const DEFAULT_DURATION_SEC = 1.0;
+const MIN_DURATION_SEC = 0.1;
+const MAX_DURATION_SEC = 3.0;
+
+interface TransitionPickerProps {
+  current: Transition | undefined;
+  maxDurationSec: number;
+  onApply: (type: TransitionType, durationSec: number) => void;
+  onClear: () => void;
+  onClose: () => void;
+}
+
+export function TransitionPicker({ current, maxDurationSec, onApply, onClear, onClose }: TransitionPickerProps) {
+  const [durationSec, setDurationSec] = useState(current?.durationSec ?? DEFAULT_DURATION_SEC);
+  const cappedMax = Math.max(MIN_DURATION_SEC, Math.min(MAX_DURATION_SEC, maxDurationSec));
+
+  return (
+    <div className="transition-picker" onPointerDown={(e) => e.stopPropagation()}>
+      <div className="transition-picker-grid">
+        {TRANSITION_TYPES.map((type) => (
+          <button
+            key={type}
+            className={`transition-option ${current?.type === type ? "transition-option-active" : ""}`}
+            onClick={() => onApply(type, durationSec)}
+          >
+            {TRANSITION_LABELS[type]}
+          </button>
+        ))}
+      </div>
+
+      <label className="transition-duration-label">
+        Längd: {durationSec.toFixed(2)}s
+        <input
+          type="range"
+          min={MIN_DURATION_SEC}
+          max={cappedMax}
+          step={0.05}
+          value={Math.min(durationSec, cappedMax)}
+          onChange={(e) => setDurationSec(parseFloat(e.target.value))}
+        />
+      </label>
+
+      <div className="transition-picker-actions">
+        <button onClick={onClear} disabled={!current}>
+          Ingen övergång
+        </button>
+        <button onClick={onClose}>Stäng</button>
+      </div>
+    </div>
+  );
+}

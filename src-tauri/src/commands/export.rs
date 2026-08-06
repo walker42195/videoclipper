@@ -1,6 +1,8 @@
-use crate::ffmpeg::filtergraph::{build_concat_graph, GraphClip, NormalizeTarget};
+use crate::ffmpeg::filtergraph::{
+    build_transition_graph, GraphClip, NormalizeTarget, TransitionJunction, CUT_DURATION_SEC,
+};
 use crate::ffmpeg::progress::ProgressParser;
-use crate::model::{Clip, ExportSettings};
+use crate::model::{Clip, ExportSettings, Transition, TransitionType};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
@@ -9,8 +11,34 @@ use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 #[serde(rename_all = "camelCase")]
 pub struct ExportRequest {
     pub clips: Vec<Clip>,
+    /// Sparse: only junctions the user put an explicit transition on need an
+    /// entry here (matched by fromClipId/toClipId). Missing junctions render
+    /// as a hard cut (see [`CUT_DURATION_SEC`]).
+    pub transitions: Vec<Transition>,
     pub export_settings: ExportSettings,
     pub output_path: String,
+}
+
+/// Build the ordered, gap-filled per-junction transition list
+/// `build_transition_graph` needs from the project's sparse transitions.
+fn resolve_junctions(clips: &[Clip], transitions: &[Transition]) -> Vec<TransitionJunction> {
+    clips
+        .windows(2)
+        .map(|pair| {
+            let (from, to) = (&pair[0].id, &pair[1].id);
+            transitions
+                .iter()
+                .find(|t| &t.from_clip_id == from && &t.to_clip_id == to)
+                .map(|t| TransitionJunction {
+                    transition_type: t.transition_type,
+                    duration_sec: t.duration_sec,
+                })
+                .unwrap_or(TransitionJunction {
+                    transition_type: TransitionType::Fade,
+                    duration_sec: CUT_DURATION_SEC,
+                })
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -19,8 +47,9 @@ pub struct ExportResult {
     pub output_path: String,
 }
 
-/// v1 (M2/M3): normalize + concat, no transitions yet (M5) and no audio
-/// replacement yet (M6) - those extend this same command incrementally.
+/// v1 (M2/M3/M5): normalize + xfade/acrossfade-chained transitions (hard
+/// cuts are just a very short transition, see [`resolve_junctions`]). Audio
+/// replacement lands in M6.
 #[tauri::command]
 pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<ExportResult, String> {
     if request.clips.is_empty() {
@@ -47,8 +76,9 @@ pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<Ex
         })
         .collect();
 
-    let total_duration_sec: f64 = request.clips.iter().map(Clip::duration_sec).sum();
-    let (filter_complex, maps) = build_concat_graph(&graph_clips, target);
+    let junctions = resolve_junctions(&request.clips, &request.transitions);
+    let (filter_complex, maps, total_duration_sec) =
+        build_transition_graph(&graph_clips, target, &junctions);
 
     let mut args: Vec<String> = vec!["-y".into()];
     for clip in &request.clips {

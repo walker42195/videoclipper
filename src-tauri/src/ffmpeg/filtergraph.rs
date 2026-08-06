@@ -3,6 +3,14 @@
 //! `filter_complex` graph. Kept dependency-free so it can be unit tested
 //! without spawning any subprocess.
 
+use crate::model::TransitionType;
+
+/// Junctions with no user-chosen transition are still built through the
+/// xfade/acrossfade chain (rather than falling back to `concat`) so the
+/// graph-building code has one uniform path; a duration this short (~1
+/// frame at 24fps) is visually indistinguishable from a hard cut.
+pub const CUT_DURATION_SEC: f64 = 0.04;
+
 /// One junction between two adjacent clips.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JunctionInput {
@@ -203,6 +211,104 @@ pub fn build_concat_graph(clips: &[GraphClip], target: NormalizeTarget) -> (Stri
     (graph, maps)
 }
 
+/// One junction's transition choice, going into [`build_transition_graph`].
+#[derive(Debug, Clone, Copy)]
+pub struct TransitionJunction {
+    pub transition_type: TransitionType,
+    pub duration_sec: f64,
+}
+
+/// Build a `-filter_complex` graph (+ trailing `-map` args + the resulting
+/// total output duration in seconds) that normalizes every clip like
+/// [`build_concat_graph`] does, but links consecutive clips with
+/// `xfade`/`acrossfade` instead of `concat`. `transitions.len()` must equal
+/// `clips.len() - 1` (use [`CUT_DURATION_SEC`] for junctions the user didn't
+/// put an explicit transition on). The returned duration is shorter than the
+/// sum of clip durations by however much the transitions overlap - callers
+/// computing export progress must use it instead of summing clip durations.
+pub fn build_transition_graph(
+    clips: &[GraphClip],
+    target: NormalizeTarget,
+    transitions: &[TransitionJunction],
+) -> (String, Vec<String>, f64) {
+    assert!(!clips.is_empty(), "need at least one clip");
+    assert_eq!(
+        transitions.len(),
+        clips.len().saturating_sub(1),
+        "need exactly one fewer transition than clips"
+    );
+
+    if clips.len() == 1 {
+        let (graph, maps) = build_concat_graph(clips, target);
+        let duration = clips[0].trim_out_sec - clips[0].trim_in_sec;
+        return (graph, maps, duration);
+    }
+
+    let clip_durations: Vec<f64> = clips.iter().map(|c| c.trim_out_sec - c.trim_in_sec).collect();
+    let junction_inputs: Vec<JunctionInput> = transitions
+        .iter()
+        .map(|t| JunctionInput { transition_duration_sec: t.duration_sec })
+        .collect();
+    let clamped = clamp_transitions(&clip_durations, &junction_inputs);
+    let (placements, total_duration_sec) = compute_junctions(&clip_durations, &clamped);
+
+    let mut graph = String::new();
+    let mut v_labels = Vec::with_capacity(clips.len());
+    let mut a_labels = Vec::with_capacity(clips.len());
+
+    for (idx, clip) in clips.iter().enumerate() {
+        let vlabel = format!("v{idx}");
+        graph.push_str(&normalize_video_chain(clip, target, &vlabel));
+        v_labels.push(vlabel);
+
+        if clip.has_audio || clip.audio_input_index.is_some() {
+            let alabel = format!("a{idx}");
+            graph.push_str(&normalize_audio_chain(clip, target, &alabel));
+            a_labels.push(alabel);
+        }
+    }
+    let has_audio = a_labels.len() == clips.len();
+
+    let mut prev_v = v_labels[0].clone();
+    let mut prev_a = has_audio.then(|| a_labels[0].clone());
+
+    for (i, (junction, placement)) in transitions.iter().zip(placements.iter()).enumerate() {
+        let next_v = format!("vx{i}");
+        graph.push_str(&format!(
+            "[{prev}][{cur}]xfade=transition={ttype}:duration={dur}:offset={off}[{out}];\n",
+            prev = prev_v,
+            cur = v_labels[i + 1],
+            ttype = junction.transition_type.xfade_name(),
+            dur = placement.duration_sec,
+            off = placement.offset_sec,
+            out = next_v,
+        ));
+        prev_v = next_v;
+
+        if has_audio {
+            let next_a = format!("ax{i}");
+            graph.push_str(&format!(
+                "[{prev}][{cur}]acrossfade=d={dur}:c1=tri:c2=tri[{out}];\n",
+                prev = prev_a.as_ref().unwrap(),
+                cur = a_labels[i + 1],
+                dur = placement.duration_sec,
+                out = next_a,
+            ));
+            prev_a = Some(next_a);
+        }
+    }
+
+    graph.push_str(&format!("[{prev_v}]null[vout];\n"));
+    let mut maps = vec!["-map".to_string(), "[vout]".to_string()];
+    if let Some(a) = prev_a {
+        graph.push_str(&format!("[{a}]anull[aout];\n"));
+        maps.push("-map".to_string());
+        maps.push("[aout]".to_string());
+    }
+
+    (graph, maps, total_duration_sec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +401,74 @@ mod tests {
         let (graph, maps) = build_concat_graph(&clips, target);
         assert!(graph.contains("concat=n=2:v=1:a=0[vout]"));
         assert_eq!(maps, vec!["-map", "[vout]"]);
+    }
+
+    #[test]
+    fn transition_graph_single_clip_delegates_to_concat_graph() {
+        let clips = vec![GraphClip {
+            input_index: 0,
+            trim_in_sec: 0.0,
+            trim_out_sec: 5.0,
+            audio_input_index: None,
+            has_audio: true,
+        }];
+        let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
+        let (graph, maps, total) = build_transition_graph(&clips, target, &[]);
+        assert!(graph.contains("[v0]null[vout]"));
+        assert_eq!(maps, vec!["-map", "[vout]", "-map", "[aout]"]);
+        approx(total, 5.0);
+    }
+
+    #[test]
+    fn transition_graph_chains_xfade_and_acrossfade() {
+        // Matches the plan's worked example: 5s/4s/6s clips, fade 1s at
+        // 0->1, dissolve 0.75s at 1->2.
+        let clips = vec![
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_input_index: None, has_audio: true },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_input_index: None, has_audio: true },
+            GraphClip { input_index: 2, trim_in_sec: 0.0, trim_out_sec: 6.0, audio_input_index: None, has_audio: true },
+        ];
+        let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
+        let transitions = [
+            TransitionJunction { transition_type: TransitionType::Fade, duration_sec: 1.0 },
+            TransitionJunction { transition_type: TransitionType::Dissolve, duration_sec: 0.75 },
+        ];
+        let (graph, maps, total) = build_transition_graph(&clips, target, &transitions);
+
+        assert!(graph.contains("[v0][v1]xfade=transition=fade:duration=1:offset=4[vx0]"));
+        assert!(graph.contains("[a0][a1]acrossfade=d=1:c1=tri:c2=tri[ax0]"));
+        assert!(graph.contains("[vx0][v2]xfade=transition=dissolve:duration=0.75:offset=7.25[vx1]"));
+        assert!(graph.contains("[ax0][a2]acrossfade=d=0.75:c1=tri:c2=tri[ax1]"));
+        assert!(graph.contains("[vx1]null[vout]"));
+        assert!(graph.contains("[ax1]anull[aout]"));
+        assert_eq!(maps, vec!["-map", "[vout]", "-map", "[aout]"]);
+        approx(total, 13.25);
+    }
+
+    #[test]
+    fn transition_graph_no_audio_omits_acrossfade_and_audio_map() {
+        let clips = vec![
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_input_index: None, has_audio: false },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_input_index: None, has_audio: false },
+        ];
+        let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
+        let transitions = [TransitionJunction { transition_type: TransitionType::Wipeleft, duration_sec: 1.0 }];
+        let (graph, maps, _total) = build_transition_graph(&clips, target, &transitions);
+
+        assert!(graph.contains("xfade=transition=wipeleft"));
+        assert!(!graph.contains("acrossfade"));
+        assert_eq!(maps, vec!["-map", "[vout]"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "need exactly one fewer transition than clips")]
+    fn transition_graph_rejects_mismatched_transition_count() {
+        let clips = vec![
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_input_index: None, has_audio: true },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_input_index: None, has_audio: true },
+        ];
+        let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
+        let _ = build_transition_graph(&clips, target, &[]);
     }
 
     #[test]

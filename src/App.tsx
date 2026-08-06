@@ -18,7 +18,7 @@ function formatDuration(sec: number): string {
 }
 
 function App() {
-  const { clips, addClip, exportSettings } = useProjectStore();
+  const { clips, transitions, addClip, exportSettings } = useProjectStore();
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [progress, setProgress] = useState<ExportProgress | null>(null);
@@ -75,7 +75,7 @@ function App() {
     setProgress(null);
     setStatusMessage("Exporterar...");
     try {
-      const result = await exportProject(clips, exportSettings, outputPath);
+      const result = await exportProject(clips, transitions, exportSettings, outputPath);
       setStatusMessage(`Klart! Sparad till ${result.outputPath}`);
     } catch (err) {
       setStatusMessage(`Export misslyckades: ${err}`);
