@@ -20,14 +20,40 @@ export const DEFAULT_CLIP_AUDIO_OVERRIDE: AudioOverride = {
   gainDb: 0,
 };
 
+/** What a timeline entry's video comes from - mirrors Rust's internally
+ * tagged ClipSource enum (`{kind: "video"}` etc.). Image/TextCard clips
+ * reuse every other Clip field: trimInSec is always 0 and trimOutSec is the
+ * on-timeline display duration (there's no source file to trim within). */
+export type ClipSource =
+  | { kind: "video" }
+  | { kind: "image" }
+  | { kind: "textCard"; text: string; backgroundColor: string; fontColor: string };
+
+export const DEFAULT_TEXT_CARD_SOURCE: ClipSource = {
+  kind: "textCard",
+  text: "",
+  backgroundColor: "#000000",
+  fontColor: "#FFFFFF",
+};
+
+/** Practical UI-only duration cap for Image/TextCard clips (drag handles,
+ * number inputs) - unlike Video, there's no real source file duration to
+ * bound them by, and the Rust backend places no limit here at all. */
+export const STILL_ITEM_MAX_DURATION_SEC = 60;
+export const STILL_ITEM_DEFAULT_DURATION_SEC = 3;
+
 export interface Clip {
   id: string;
+  source: ClipSource;
+  /** Video/Image: path to the source file. TextCard: unused (empty string). */
   sourcePath: string;
-  /** Full duration of the source file - the upper bound trimOutSec can't exceed. */
+  /** Full duration of the source file - the upper bound trimOutSec can't exceed.
+   * Not meaningful for Image/TextCard. */
   sourceDurationSec: number;
   trimInSec: number;
   trimOutSec: number;
-  /** Whether the source file has an audio stream at all (from probeClip). */
+  /** Whether the source file has an audio stream at all (from probeClip).
+   * Always false for Image/TextCard. */
   hasAudio: boolean;
   audioOverride: AudioOverride | null;
 }

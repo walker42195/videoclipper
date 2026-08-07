@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Clip } from "../../types";
+import { Clip, STILL_ITEM_MAX_DURATION_SEC } from "../../types";
 import { extractThumbnail } from "../../lib/tauriCommands";
 import { useProjectStore } from "../../state/projectStore";
+import { useBlobUrl } from "../../lib/useBlobUrl";
 import { ClipAudioPicker } from "./ClipAudioPicker";
 
 const MIN_CLIP_DURATION_SEC = 0.2;
@@ -39,7 +40,14 @@ export function ClipCard({ clip, index, onRemove, onTrimChange }: ClipCardProps)
   // audio underneath the music, so it stays active there.
   const clipAudioDisabled = movieAudioOverride?.blendMode === "Replace";
 
+  // Image/TextCard have no source file to trim within - trimInSec is always
+  // 0 (no start handle) and trimOutSec is just "how long this stays on
+  // screen", capped by an arbitrary UI limit rather than a real duration.
+  const isVideo = clip.source.kind === "video";
+  const maxDuration = isVideo ? clip.sourceDurationSec : STILL_ITEM_MAX_DURATION_SEC;
+
   const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const imageBlobUrl = useBlobUrl(clip.source.kind === "image" ? clip.sourcePath : null);
   const dragState = useRef<{
     handle: TrimHandle;
     startX: number;
@@ -49,8 +57,10 @@ export function ClipCard({ clip, index, onRemove, onTrimChange }: ClipCardProps)
   } | null>(null);
 
   // Fetch a fresh thumbnail once on mount and whenever the committed
-  // trim-in point changes (not on every pointermove while dragging).
+  // trim-in point changes (not on every pointermove while dragging). Only
+  // video clips need this - image thumbnails are just the image itself.
   useEffect(() => {
+    if (clip.source.kind !== "video") return;
     let cancelled = false;
     extractThumbnail(clip.sourcePath, clip.trimInSec)
       .then((dataUrl) => {
@@ -63,7 +73,7 @@ export function ClipCard({ clip, index, onRemove, onTrimChange }: ClipCardProps)
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clip.sourcePath, clip.trimInSec]);
+  }, [clip.source.kind, clip.sourcePath, clip.trimInSec]);
 
   function beginTrimDrag(handle: TrimHandle, e: React.PointerEvent<HTMLDivElement>) {
     e.stopPropagation();
@@ -93,7 +103,7 @@ export function ClipCard({ clip, index, onRemove, onTrimChange }: ClipCardProps)
       onTrimChange(clip.id, nextIn, clip.trimOutSec);
     } else {
       const nextOut = Math.max(
-        Math.min(clip.sourceDurationSec, state.startTrimOut + deltaSec),
+        Math.min(maxDuration, state.startTrimOut + deltaSec),
         clip.trimInSec + MIN_CLIP_DURATION_SEC,
       );
       onTrimChange(clip.id, clip.trimInSec, nextOut);
@@ -113,9 +123,14 @@ export function ClipCard({ clip, index, onRemove, onTrimChange }: ClipCardProps)
   };
 
   const canTrimIn = clip.trimInSec > 0;
-  const canTrimOut = clip.trimOutSec < clip.sourceDurationSec;
+  const canTrimOut = clip.trimOutSec < maxDuration;
 
   const isPreviewing = clip.id === previewClipId;
+
+  const displayName =
+    clip.source.kind === "textCard"
+      ? clip.source.text.trim() || "Textkort"
+      : fileNameFromPath(clip.sourcePath);
 
   return (
     <div ref={setNodeRef} style={style} className={`clip-card ${isPreviewing ? "clip-card-previewing" : ""}`}>
@@ -128,27 +143,38 @@ export function ClipCard({ clip, index, onRemove, onTrimChange }: ClipCardProps)
       >
         <span className="clip-index">{index + 1}</span>
         <div className="clip-thumbnail">
-          {thumbnail ? <img src={thumbnail} alt="" /> : <div className="clip-thumbnail-placeholder" />}
+          {clip.source.kind === "video" && (thumbnail ? <img src={thumbnail} alt="" /> : <div className="clip-thumbnail-placeholder" />)}
+          {clip.source.kind === "image" && (imageBlobUrl ? <img src={imageBlobUrl} alt="" /> : <div className="clip-thumbnail-placeholder" />)}
+          {clip.source.kind === "textCard" && (
+            <div
+              className="clip-thumbnail-textcard"
+              style={{ backgroundColor: clip.source.backgroundColor, color: clip.source.fontColor }}
+            >
+              T
+            </div>
+          )}
         </div>
         <div className="clip-info">
-          <span className="clip-name">{fileNameFromPath(clip.sourcePath)}</span>
+          <span className="clip-name">{displayName}</span>
           <span className="clip-duration">{formatDuration(clip.trimOutSec - clip.trimInSec)}</span>
         </div>
       </div>
 
-      <div
-        className={`trim-handle trim-handle-in ${canTrimIn ? "" : "trim-handle-disabled"}`}
-        onPointerDown={(e) => beginTrimDrag("in", e)}
-        onPointerMove={onTrimPointerMove}
-        onPointerUp={endTrimDrag}
-        title="Dra för att trimma klippets början"
-      />
+      {isVideo && (
+        <div
+          className={`trim-handle trim-handle-in ${canTrimIn ? "" : "trim-handle-disabled"}`}
+          onPointerDown={(e) => beginTrimDrag("in", e)}
+          onPointerMove={onTrimPointerMove}
+          onPointerUp={endTrimDrag}
+          title="Dra för att trimma klippets början"
+        />
+      )}
       <div
         className={`trim-handle trim-handle-out ${canTrimOut ? "" : "trim-handle-disabled"}`}
         onPointerDown={(e) => beginTrimDrag("out", e)}
         onPointerMove={onTrimPointerMove}
         onPointerUp={endTrimDrag}
-        title="Dra för att trimma klippets slut"
+        title={isVideo ? "Dra för att trimma klippets slut" : "Dra för att ändra visningstid"}
       />
 
       <div className="clip-audio-btn-wrapper">

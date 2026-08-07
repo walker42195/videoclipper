@@ -1,7 +1,7 @@
 import { RefObject, useRef } from "react";
 import { useProjectStore } from "../../state/projectStore";
 import { useBlobUrl } from "../../lib/useBlobUrl";
-import { Clip } from "../../types";
+import { Clip, STILL_ITEM_MAX_DURATION_SEC } from "../../types";
 
 const STEP_SEC = 1;
 const MIN_CLIP_DURATION_SEC = 0.1;
@@ -75,37 +75,121 @@ function TrimControls({ clip, videoRef, onTrimChange }: TrimControlsProps) {
   );
 }
 
+interface DurationControlsProps {
+  clip: Clip;
+  onTrimChange: (id: string, trimInSec: number, trimOutSec: number) => void;
+}
+
+/** Duration editor for Image/TextCard clips - there's no source media to
+ * trim within, just a display length to shorten or lengthen. */
+function DurationControls({ clip, onTrimChange }: DurationControlsProps) {
+  function adjust(deltaSec: number) {
+    const next = Math.max(MIN_CLIP_DURATION_SEC, Math.min(STILL_ITEM_MAX_DURATION_SEC, clip.trimOutSec + deltaSec));
+    onTrimChange(clip.id, 0, next);
+  }
+
+  return (
+    <div className="trim-controls">
+      <div className="trim-controls-row">
+        <span className="trim-controls-label">Visningstid: {formatSeconds(clip.trimOutSec)}</span>
+        <button onClick={() => adjust(-STEP_SEC)} disabled={clip.trimOutSec <= MIN_CLIP_DURATION_SEC}>
+          −1s
+        </button>
+        <button onClick={() => adjust(STEP_SEC)} disabled={clip.trimOutSec >= STILL_ITEM_MAX_DURATION_SEC}>
+          +1s
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface TextCardEditorProps {
+  clip: Clip;
+}
+
+function TextCardEditor({ clip }: TextCardEditorProps) {
+  const { updateClipSource } = useProjectStore();
+  if (clip.source.kind !== "textCard") return null;
+  const source = clip.source;
+
+  return (
+    <div
+      className="text-card-preview"
+      style={{ backgroundColor: source.backgroundColor, color: source.fontColor }}
+    >
+      <textarea
+        className="text-card-textarea"
+        style={{ color: source.fontColor }}
+        value={source.text}
+        placeholder="Skriv texten som ska visas..."
+        onChange={(e) => updateClipSource(clip.id, { ...source, text: e.target.value })}
+      />
+      <div className="text-card-color-row">
+        <label>
+          Bakgrund
+          <input
+            type="color"
+            value={source.backgroundColor}
+            onChange={(e) => updateClipSource(clip.id, { ...source, backgroundColor: e.target.value })}
+          />
+        </label>
+        <label>
+          Text
+          <input
+            type="color"
+            value={source.fontColor}
+            onChange={(e) => updateClipSource(clip.id, { ...source, fontColor: e.target.value })}
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
 export function ClipPreviewPlayer() {
   const { clips, previewClipId, setPreviewClipId, updateClipTrim } = useProjectStore();
   const videoRef = useRef<HTMLVideoElement>(null);
   const clip = clips.find((c) => c.id === previewClipId);
-  const blobUrl = useBlobUrl(clip?.sourcePath ?? null);
+  const isMediaFile = clip?.source.kind === "video" || clip?.source.kind === "image";
+  const blobUrl = useBlobUrl(isMediaFile ? (clip?.sourcePath ?? null) : null);
 
   if (!clip) return null;
+
+  const title = clip.source.kind === "textCard" ? "Textkort" : fileNameFromPath(clip.sourcePath);
 
   return (
     <div className="clip-preview">
       <div className="clip-preview-header">
-        <span>Förhandsvisning: {fileNameFromPath(clip.sourcePath)}</span>
+        <span>Förhandsvisning: {title}</span>
         <button onClick={() => setPreviewClipId(null)}>Stäng</button>
       </div>
-      <video
-        key={clip.id}
-        ref={videoRef}
-        src={blobUrl ?? undefined}
-        controls
-        autoPlay
-        onLoadedMetadata={() => {
-          if (videoRef.current) videoRef.current.currentTime = clip.trimInSec;
-        }}
-        onTimeUpdate={(e) => {
-          const video = e.currentTarget;
-          if (video.currentTime >= clip.trimOutSec) {
-            video.currentTime = clip.trimInSec;
-          }
-        }}
-      />
-      <TrimControls clip={clip} videoRef={videoRef} onTrimChange={updateClipTrim} />
+
+      {clip.source.kind === "video" && (
+        <video
+          key={clip.id}
+          ref={videoRef}
+          src={blobUrl ?? undefined}
+          controls
+          autoPlay
+          onLoadedMetadata={() => {
+            if (videoRef.current) videoRef.current.currentTime = clip.trimInSec;
+          }}
+          onTimeUpdate={(e) => {
+            const video = e.currentTarget;
+            if (video.currentTime >= clip.trimOutSec) {
+              video.currentTime = clip.trimInSec;
+            }
+          }}
+        />
+      )}
+      {clip.source.kind === "image" && (blobUrl ? <img className="clip-preview-image" src={blobUrl} alt="" /> : null)}
+      {clip.source.kind === "textCard" && <TextCardEditor clip={clip} />}
+
+      {clip.source.kind === "video" ? (
+        <TrimControls clip={clip} videoRef={videoRef} onTrimChange={updateClipTrim} />
+      ) : (
+        <DurationControls clip={clip} onTrimChange={updateClipTrim} />
+      )}
     </div>
   );
 }

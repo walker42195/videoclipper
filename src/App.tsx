@@ -12,7 +12,7 @@ import {
   saveProject,
 } from "./lib/tauriCommands";
 import { useBlobUrl } from "./lib/useBlobUrl";
-import { Clip, ExportProgress } from "./types";
+import { Clip, DEFAULT_TEXT_CARD_SOURCE, ExportProgress, STILL_ITEM_DEFAULT_DURATION_SEC } from "./types";
 import { Timeline } from "./components/Timeline/Timeline";
 import { ClipPreviewPlayer } from "./components/Timeline/ClipPreviewPlayer";
 import { MovieAudioPanel } from "./components/AudioPanel/MovieAudioPanel";
@@ -73,6 +73,7 @@ function App() {
         const meta = await probeClip(path);
         const clip: Clip = {
           id: crypto.randomUUID(),
+          source: { kind: "video" },
           sourcePath: path,
           sourceDurationSec: meta.durationSec,
           trimInSec: 0,
@@ -86,6 +87,45 @@ function App() {
       }
     }
     setStatusMessage("");
+  }
+
+  async function handleAddImage() {
+    const selected = await open({
+      multiple: true,
+      defaultPath: localStorage.getItem(LAST_IMPORT_DIR_KEY) ?? undefined,
+      filters: [{ name: "Bild", extensions: ["jpg", "jpeg", "png", "webp", "bmp"] }],
+    });
+    if (!selected) return;
+    const paths = Array.isArray(selected) ? selected : [selected];
+    localStorage.setItem(LAST_IMPORT_DIR_KEY, await dirname(paths[0]));
+
+    for (const path of paths) {
+      const clip: Clip = {
+        id: crypto.randomUUID(),
+        source: { kind: "image" },
+        sourcePath: path,
+        sourceDurationSec: STILL_ITEM_DEFAULT_DURATION_SEC,
+        trimInSec: 0,
+        trimOutSec: STILL_ITEM_DEFAULT_DURATION_SEC,
+        hasAudio: false,
+        audioOverride: null,
+      };
+      addClip(clip);
+    }
+  }
+
+  function handleAddTextCard() {
+    const clip: Clip = {
+      id: crypto.randomUUID(),
+      source: DEFAULT_TEXT_CARD_SOURCE,
+      sourcePath: "",
+      sourceDurationSec: STILL_ITEM_DEFAULT_DURATION_SEC,
+      trimInSec: 0,
+      trimOutSec: STILL_ITEM_DEFAULT_DURATION_SEC,
+      hasAudio: false,
+      audioOverride: null,
+    };
+    addClip(clip);
   }
 
   async function handleExport() {
@@ -196,6 +236,12 @@ function App() {
       <div className="toolbar">
         <button onClick={handleAddClips} disabled={busy}>
           + Lägg till klipp
+        </button>
+        <button onClick={handleAddImage} disabled={busy}>
+          + Stillbild
+        </button>
+        <button onClick={handleAddTextCard} disabled={busy}>
+          + Textkort
         </button>
         {!busy ? (
           <button onClick={handleExport} disabled={clips.length === 0}>

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   AudioOverride,
   Clip,
+  ClipSource,
   DEFAULT_EXPORT_SETTINGS,
   ExportSettings,
   MovieAudioOverride,
@@ -34,6 +35,7 @@ interface ProjectState {
   moveClip: (fromIndex: number, toIndex: number) => void;
   updateClipTrim: (id: string, trimInSec: number, trimOutSec: number) => void;
   updateClipAudioOverride: (id: string, override: AudioOverride | null) => void;
+  updateClipSource: (id: string, source: ClipSource) => void;
   setTransition: (fromClipId: string, toClipId: string, type: TransitionType, durationSec: number) => void;
   clearTransition: (fromClipId: string, toClipId: string) => void;
   setMovieAudioOverride: (override: MovieAudioOverride | null) => void;
@@ -79,6 +81,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   updateClipAudioOverride: (id, audioOverride) =>
     set((s) => ({
       clips: s.clips.map((c) => (c.id === id ? { ...c, audioOverride } : c)),
+    })),
+  updateClipSource: (id, source) =>
+    set((s) => ({
+      clips: s.clips.map((c) => (c.id === id ? { ...c, source } : c)),
     })),
   setTransition: (fromClipId, toClipId, type, durationSec) =>
     set((s) => ({
