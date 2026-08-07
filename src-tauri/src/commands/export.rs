@@ -458,4 +458,67 @@ mod tests {
         assert!(out.exists());
         assert!(std::fs::metadata(&out).unwrap().len() > 0);
     }
+
+    /// Exercises the OS-level mechanics `cancel_export` relies on:
+    /// `CommandChild::kill()` (via the `shared_child` crate) is a thin
+    /// wrapper around `std::process::Child::kill()`, so killing a real,
+    /// actively-encoding ffmpeg process here is a direct proxy for what
+    /// happens when a user clicks "Avbryt" mid-export. Confirms the process
+    /// actually dies promptly (not just eventually) and that the partial
+    /// output file it leaves behind - exactly what `export_project`'s
+    /// cancelled branch deletes - exists and is removable.
+    #[test]
+    #[ignore]
+    fn killing_a_running_ffmpeg_process_terminates_it_and_leaves_a_removable_partial_file() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join("videoclipper_cancel_verify");
+        let _ = std::fs::create_dir_all(&dir);
+        let ffmpeg = std::env::current_dir()
+            .unwrap()
+            .join("binaries/ffmpeg-x86_64-unknown-linux-gnu");
+        assert!(ffmpeg.exists(), "run scripts/fetch-ffmpeg.sh linux first");
+        let out = dir.join("partial.mp4");
+        let _ = std::fs::remove_file(&out);
+
+        // Long enough (slow preset, 30s of synthetic video) that a kill sent
+        // shortly after spawn lands well before natural completion.
+        let mut child = Command::new(&ffmpeg)
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=1280x720:rate=30:duration=30",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryslow",
+                out.to_str().unwrap(),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn ffmpeg");
+
+        std::thread::sleep(Duration::from_millis(400));
+        child.kill().expect("kill() should succeed on a running process");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("try_wait failed") {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "process did not die within 5s of kill()");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(!status.success(), "a killed process must not report success");
+
+        assert!(out.exists(), "expected a partial output file to have been written before the kill");
+        assert!(std::fs::metadata(&out).unwrap().len() > 0);
+        std::fs::remove_file(&out).expect("partial output file must be removable, as export_project's cancel path does");
+
+        let _ = std::fs::remove_dir(&dir);
+    }
 }
