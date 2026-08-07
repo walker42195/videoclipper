@@ -41,6 +41,11 @@ pub struct AudioOverride {
 pub enum ClipSource {
     Video,
     Image,
+    // rename_all on the enum only renames the tag value ("textCard"), NOT
+    // this variant's own fields - each struct variant needs its own
+    // rename_all or its fields serialize as snake_case regardless of the
+    // enum-level attribute (verified empirically, not just from memory).
+    #[serde(rename_all = "camelCase")]
     TextCard {
         text: String,
         /// `#RRGGBB`, validated server-side before it ever reaches an
@@ -414,4 +419,26 @@ mod tests {
             assert_eq!(variant.xfade_name(), *name);
         }
     }
+
+    #[test]
+    fn clip_source_text_card_serializes_camel_case() {
+        // rename_all on the enum only renames the tag value, not a struct
+        // variant's own fields - this guards the fix for that.
+        let v = ClipSource::TextCard {
+            text: "hej".into(),
+            background_color: "#000000".into(),
+            font_color: "#FFFFFF".into(),
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, r##"{"kind":"textCard","text":"hej","backgroundColor":"#000000","fontColor":"#FFFFFF"}"##);
+    }
+
+    #[test]
+    fn clip_source_defaults_to_video_when_absent() {
+        // Old saved projects predate this field; load_project must still work.
+        let json = r#"{"id":"c0","sourcePath":"a.mp4","sourceDurationSec":5.0,"trimInSec":0.0,"trimOutSec":5.0,"hasAudio":true,"audioOverride":null}"#;
+        let clip: Clip = serde_json::from_str(json).unwrap();
+        assert_eq!(clip.source, ClipSource::Video);
+    }
 }
+
