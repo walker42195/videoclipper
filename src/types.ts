@@ -32,30 +32,144 @@ export interface Clip {
   audioOverride: AudioOverride | null;
 }
 
+// Mirrors src-tauri/src/model.rs's TransitionType exactly (byte-identical
+// variant spelling, since serde serializes the Rust enum variant name as-is
+// with no rename_all) - kept in sync with ffmpeg's xfade filter's built-in
+// transition list (`ffmpeg -h filter=xfade`, indices 0-57).
 export type TransitionType =
   | "Fade"
-  | "Dissolve"
-  | "Fadeblack"
-  | "Fadewhite"
   | "Wipeleft"
   | "Wiperight"
+  | "Wipeup"
+  | "Wipedown"
   | "Slideleft"
   | "Slideright"
+  | "Slideup"
+  | "Slidedown"
+  | "Circlecrop"
+  | "Rectcrop"
+  | "Distance"
+  | "Fadeblack"
+  | "Fadewhite"
+  | "Radial"
+  | "Smoothleft"
+  | "Smoothright"
+  | "Smoothup"
+  | "Smoothdown"
   | "Circleopen"
-  | "Smoothleft";
+  | "Circleclose"
+  | "Vertopen"
+  | "Vertclose"
+  | "Horzopen"
+  | "Horzclose"
+  | "Dissolve"
+  | "Pixelize"
+  | "Diagtl"
+  | "Diagtr"
+  | "Diagbl"
+  | "Diagbr"
+  | "Hlslice"
+  | "Hrslice"
+  | "Vuslice"
+  | "Vdslice"
+  | "Hblur"
+  | "Fadegrays"
+  | "Wipetl"
+  | "Wipetr"
+  | "Wipebl"
+  | "Wipebr"
+  | "Squeezeh"
+  | "Squeezev"
+  | "Zoomin"
+  | "Fadefast"
+  | "Fadeslow"
+  | "Hlwind"
+  | "Hrwind"
+  | "Vuwind"
+  | "Vdwind"
+  | "Coverleft"
+  | "Coverright"
+  | "Coverup"
+  | "Coverdown"
+  | "Revealleft"
+  | "Revealright"
+  | "Revealup"
+  | "Revealdown";
 
 export const TRANSITION_LABELS: Record<TransitionType, string> = {
   Fade: "Tona",
   Dissolve: "Upplösning",
-  Fadeblack: "Tona till svart",
-  Fadewhite: "Tona till vitt",
+  Fadeblack: "Tona till svart → in",
+  Fadewhite: "Tona till vitt → in",
+  Fadegrays: "Tona till gråskala",
+  Fadefast: "Snabb tona",
+  Fadeslow: "Långsam tona",
+  Distance: "Avståndstona",
+  Radial: "Radiell tona (urverk)",
+  Hblur: "Suddig tona",
+  Pixelize: "Pixlig tona",
   Wipeleft: "Svep vänster",
   Wiperight: "Svep höger",
+  Wipeup: "Svep upp",
+  Wipedown: "Svep ner",
+  Wipetl: "Svep uppåt-vänster",
+  Wipetr: "Svep uppåt-höger",
+  Wipebl: "Svep nedåt-vänster",
+  Wipebr: "Svep nedåt-höger",
   Slideleft: "Skjut vänster",
   Slideright: "Skjut höger",
-  Circleopen: "Cirkelöppning",
+  Slideup: "Skjut upp",
+  Slidedown: "Skjut ner",
   Smoothleft: "Mjuk vänster",
+  Smoothright: "Mjuk höger",
+  Smoothup: "Mjuk upp",
+  Smoothdown: "Mjuk ner",
+  Circleopen: "Cirkelöppning",
+  Circleclose: "Cirkelstängning",
+  Circlecrop: "Cirkelbeskärning",
+  Rectcrop: "Rektangelbeskärning",
+  Vertopen: "Vertikal öppning",
+  Vertclose: "Vertikal stängning",
+  Horzopen: "Horisontell öppning",
+  Horzclose: "Horisontell stängning",
+  Diagtl: "Diagonal uppåt-vänster",
+  Diagtr: "Diagonal uppåt-höger",
+  Diagbl: "Diagonal nedåt-vänster",
+  Diagbr: "Diagonal nedåt-höger",
+  Hlslice: "Horisontella remsor (vänster)",
+  Hrslice: "Horisontella remsor (höger)",
+  Vuslice: "Vertikala remsor (upp)",
+  Vdslice: "Vertikala remsor (ner)",
+  Hlwind: "Vindremsor (vänster)",
+  Hrwind: "Vindremsor (höger)",
+  Vuwind: "Vindremsor (upp)",
+  Vdwind: "Vindremsor (ner)",
+  Squeezeh: "Klämma ihop horisontellt",
+  Squeezev: "Klämma ihop vertikalt",
+  Zoomin: "Zooma in",
+  Coverleft: "Täck från vänster",
+  Coverright: "Täck från höger",
+  Coverup: "Täck uppifrån",
+  Coverdown: "Täck nerifrån",
+  Revealleft: "Avslöja åt vänster",
+  Revealright: "Avslöja åt höger",
+  Revealup: "Avslöja uppåt",
+  Revealdown: "Avslöja nedåt",
 };
+
+/** Groups transitions into UI categories so the picker doesn't dump 58
+ * options into one flat, unnavigable grid. */
+export const TRANSITION_GROUPS: { label: string; types: TransitionType[] }[] = [
+  { label: "Tona", types: ["Fade", "Dissolve", "Fadeblack", "Fadewhite", "Fadegrays", "Fadefast", "Fadeslow", "Distance", "Radial", "Hblur", "Pixelize"] },
+  { label: "Svep", types: ["Wipeleft", "Wiperight", "Wipeup", "Wipedown", "Wipetl", "Wipetr", "Wipebl", "Wipebr"] },
+  { label: "Skjut", types: ["Slideleft", "Slideright", "Slideup", "Slidedown"] },
+  { label: "Mjuk övergång", types: ["Smoothleft", "Smoothright", "Smoothup", "Smoothdown"] },
+  { label: "Iris / ram", types: ["Circleopen", "Circleclose", "Circlecrop", "Rectcrop", "Vertopen", "Vertclose", "Horzopen", "Horzclose"] },
+  { label: "Diagonal", types: ["Diagtl", "Diagtr", "Diagbl", "Diagbr"] },
+  { label: "Remsor", types: ["Hlslice", "Hrslice", "Vuslice", "Vdslice", "Hlwind", "Hrwind", "Vuwind", "Vdwind"] },
+  { label: "Zoom / klämma", types: ["Squeezeh", "Squeezev", "Zoomin"] },
+  { label: "Täck / avslöja (scenbyte)", types: ["Coverleft", "Coverright", "Coverup", "Coverdown", "Revealleft", "Revealright", "Revealup", "Revealdown"] },
+];
 
 export interface Transition {
   fromClipId: string;

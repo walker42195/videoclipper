@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { TRANSITION_LABELS, Transition, TransitionType } from "../../types";
+import { TRANSITION_GROUPS, TRANSITION_LABELS, Transition, TransitionType } from "../../types";
 
-const TRANSITION_TYPES = Object.keys(TRANSITION_LABELS) as TransitionType[];
 const DEFAULT_DURATION_SEC = 1.0;
 const MIN_DURATION_SEC = 0.1;
 const MAX_DURATION_SEC = 3.0;
@@ -20,15 +19,22 @@ export function TransitionPicker({ current, maxDurationSec, onApply, onClear, on
 
   return (
     <div className="transition-picker" onPointerDown={(e) => e.stopPropagation()}>
-      <div className="transition-picker-grid">
-        {TRANSITION_TYPES.map((type) => (
-          <button
-            key={type}
-            className={`transition-option ${current?.type === type ? "transition-option-active" : ""}`}
-            onClick={() => onApply(type, durationSec)}
-          >
-            {TRANSITION_LABELS[type]}
-          </button>
+      <div className="transition-picker-groups">
+        {TRANSITION_GROUPS.map((group) => (
+          <div key={group.label} className="transition-picker-group">
+            <div className="transition-picker-group-label">{group.label}</div>
+            <div className="transition-picker-grid">
+              {group.types.map((type) => (
+                <button
+                  key={type}
+                  className={`transition-option ${current?.type === type ? "transition-option-active" : ""}`}
+                  onClick={() => onApply(type, durationSec)}
+                >
+                  {TRANSITION_LABELS[type]}
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
       </div>
 
