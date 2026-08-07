@@ -2,9 +2,9 @@ mod commands;
 mod ffmpeg;
 mod model;
 
-use commands::export::export_project;
+use commands::export::{cancel_export, export_project, ExportHandle};
 use commands::probe::{extract_thumbnail, ffmpeg_version, probe_clip};
-use commands::project::{load_project, save_project};
+use commands::project::{available_disk_space_bytes, load_project, save_project};
 
 /// Works around a WebKitGTK/NVIDIA/Wayland crash on launch
 /// ("Gdk-Message: Error 71 (Protocol error) dispatching to Wayland
@@ -28,13 +28,16 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(ExportHandle::default())
         .invoke_handler(tauri::generate_handler![
             ffmpeg_version,
             probe_clip,
             extract_thumbnail,
             export_project,
+            cancel_export,
             save_project,
             load_project,
+            available_disk_space_bytes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

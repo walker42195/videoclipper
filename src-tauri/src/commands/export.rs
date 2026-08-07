@@ -1,12 +1,33 @@
 use crate::ffmpeg::filtergraph::{
-    build_background_music_chain, build_transition_graph, BackgroundMusicSpec, GraphClip,
-    NormalizeTarget, TransitionJunction, CUT_DURATION_SEC,
+    build_background_music_chain, build_transition_graph, AudioReplacement, BackgroundMusicSpec,
+    GraphClip, NormalizeTarget, TransitionJunction, CUT_DURATION_SEC,
 };
 use crate::ffmpeg::progress::ProgressParser;
-use crate::model::{Clip, ExportSettings, MovieAudioOverride, Transition, TransitionType};
+use crate::model::{AudioBlendMode, Clip, ExportSettings, MovieAudioOverride, Transition, TransitionType};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
-use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
+
+/// Tracks the currently-running export's ffmpeg child so `cancel_export` can
+/// kill it, and whether the last termination was a deliberate cancel (vs. a
+/// real ffmpeg failure) so `export_project` can report it accordingly.
+#[derive(Default)]
+pub struct ExportHandle {
+    child: Mutex<Option<CommandChild>>,
+    cancelled: AtomicBool,
+}
+
+#[tauri::command]
+pub fn cancel_export(state: State<'_, ExportHandle>) -> Result<(), String> {
+    state.cancelled.store(true, Ordering::SeqCst);
+    let child = state.child.lock().unwrap().take();
+    if let Some(child) = child {
+        child.kill().map_err(|e| format!("failed to kill ffmpeg: {e}"))?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,15 +70,20 @@ pub struct ExportResult {
     pub output_path: String,
 }
 
-/// v1 (M2/M3/M5): normalize + xfade/acrossfade-chained transitions (hard
-/// cuts are just a very short transition, see [`resolve_junctions`]). Audio
-/// replacement lands in M6.
-#[tauri::command]
-pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<ExportResult, String> {
-    if request.clips.is_empty() {
-        return Err("project has no clips".into());
-    }
-
+/// Builds the full ffmpeg argument list (everything up to but not including
+/// `-progress`/output path) plus the computed total output duration, from an
+/// [`ExportRequest`]. Kept free of Tauri/async so it's directly unit
+/// testable - this is where a per-clip-override input's index or the
+/// movie-audio input's index (offset by however many per-clip override
+/// inputs preceded it) would silently drift if the bookkeeping were wrong.
+///
+/// Priority rule: a whole-movie audio override in `Replace` mode drops the
+/// timeline's audio entirely (including any per-clip replacements) since
+/// nothing from the timeline would be audible anyway. In `Mix` mode,
+/// per-clip replacements stay active and get layered under the music - only
+/// `Replace` makes them moot. The UI's per-clip audio panel must gray out
+/// under the exact same condition, or the two would silently disagree.
+fn build_ffmpeg_args(request: &ExportRequest) -> (Vec<String>, f64) {
     let target = NormalizeTarget {
         width: request.export_settings.max_width,
         height: request.export_settings.max_width * 9 / 16,
@@ -65,16 +91,45 @@ pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<Ex
         sample_rate: 48000,
     };
 
+    let mut args: Vec<String> = vec!["-y".into()];
+    for clip in &request.clips {
+        args.push("-i".into());
+        args.push(clip.source_path.clone());
+    }
+    let mut next_input_index = request.clips.len();
+
+    let drop_clip_overrides = matches!(
+        request.movie_audio_override.as_ref().map(|m| m.blend_mode),
+        Some(AudioBlendMode::Replace)
+    );
+
     let graph_clips: Vec<GraphClip> = request
         .clips
         .iter()
         .enumerate()
-        .map(|(i, c)| GraphClip {
-            input_index: i,
-            trim_in_sec: c.trim_in_sec,
-            trim_out_sec: c.trim_out_sec,
-            audio_input_index: None, // audio replacement lands in M6
-            has_audio: true,         // TODO(M6): use probed ClipMeta.has_audio
+        .map(|(i, c)| {
+            let audio_replacement = if drop_clip_overrides {
+                None
+            } else {
+                c.audio_override.as_ref().map(|ov| {
+                    let idx = next_input_index;
+                    next_input_index += 1;
+                    args.push("-i".into());
+                    args.push(ov.source_path.clone());
+                    AudioReplacement {
+                        input_index: idx,
+                        fill_mode: ov.mode,
+                        gain_db: ov.gain_db,
+                    }
+                })
+            };
+            GraphClip {
+                input_index: i,
+                trim_in_sec: c.trim_in_sec,
+                trim_out_sec: c.trim_out_sec,
+                audio_replacement,
+                has_audio: c.has_audio,
+            }
         })
         .collect();
 
@@ -82,14 +137,8 @@ pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<Ex
     let (mut filter_complex, mut maps, total_duration_sec) =
         build_transition_graph(&graph_clips, target, &junctions);
 
-    let mut args: Vec<String> = vec!["-y".into()];
-    for clip in &request.clips {
-        args.push("-i".into());
-        args.push(clip.source_path.clone());
-    }
-
     if let Some(movie_audio) = &request.movie_audio_override {
-        let music_input_index = request.clips.len();
+        let music_input_index = next_input_index;
         args.push("-i".into());
         args.push(movie_audio.source_path.clone());
 
@@ -138,6 +187,22 @@ pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<Ex
         args.push("-movflags".into());
         args.push("+faststart".into());
     }
+
+    (args, total_duration_sec)
+}
+
+#[tauri::command]
+pub async fn export_project(
+    app: AppHandle,
+    state: State<'_, ExportHandle>,
+    request: ExportRequest,
+) -> Result<ExportResult, String> {
+    if request.clips.is_empty() {
+        return Err("project has no clips".into());
+    }
+    state.cancelled.store(false, Ordering::SeqCst);
+
+    let (mut args, total_duration_sec) = build_ffmpeg_args(&request);
     args.push("-progress".into());
     args.push("pipe:1".into());
     args.push("-nostats".into());
@@ -147,10 +212,11 @@ pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<Ex
     let sidecar = shell
         .sidecar("ffmpeg")
         .map_err(|e| format!("failed to resolve ffmpeg sidecar: {e}"))?;
-    let (mut rx, _child) = sidecar
+    let (mut rx, child) = sidecar
         .args(args)
         .spawn()
         .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+    *state.child.lock().unwrap() = Some(child);
 
     let mut parser = ProgressParser::new(total_duration_sec);
     let mut stderr_tail = String::new();
@@ -175,8 +241,13 @@ pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<Ex
             _ => {}
         }
     }
+    *state.child.lock().unwrap() = None;
 
     if !success {
+        if state.cancelled.swap(false, Ordering::SeqCst) {
+            let _ = std::fs::remove_file(&request.output_path);
+            return Err("cancelled".into());
+        }
         let tail: String = stderr_tail
             .lines()
             .rev()
@@ -192,4 +263,199 @@ pub async fn export_project(app: AppHandle, request: ExportRequest) -> Result<Ex
     Ok(ExportResult {
         output_path: request.output_path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{AudioMode, AudioOverride};
+
+    fn clip(id: &str, source_path: &str, has_audio: bool, audio_override: Option<AudioOverride>) -> Clip {
+        Clip {
+            id: id.into(),
+            source_path: source_path.into(),
+            source_duration_sec: 5.0,
+            trim_in_sec: 0.0,
+            trim_out_sec: 3.0,
+            has_audio,
+            audio_override,
+        }
+    }
+
+    fn request(clips: Vec<Clip>, movie_audio_override: Option<MovieAudioOverride>) -> ExportRequest {
+        ExportRequest {
+            clips,
+            transitions: vec![],
+            movie_audio_override,
+            export_settings: ExportSettings::default(),
+            output_path: "out.mp4".into(),
+        }
+    }
+
+    #[test]
+    fn per_clip_override_and_movie_audio_inputs_are_indexed_in_declaration_order() {
+        // clip0 (index 0), clip1 (index 1, no override), clip0's override
+        // file (index 2, the only extra input), movie music (index 3).
+        let clips = vec![
+            clip(
+                "c0",
+                "clip0.mp4",
+                true,
+                Some(AudioOverride { source_path: "override0.mp3".into(), mode: AudioMode::Loop, gain_db: -3.0 }),
+            ),
+            clip("c1", "clip1.mp4", true, None),
+        ];
+        let movie_audio = MovieAudioOverride {
+            source_path: "music.mp3".into(),
+            blend_mode: AudioBlendMode::Mix,
+            fill_mode: AudioMode::Loop,
+            gain_db: -18.0,
+            fade_in_sec: 0.5,
+            fade_out_sec: 0.5,
+        };
+        let (args, _total) = build_ffmpeg_args(&request(clips, Some(movie_audio)));
+
+        let inputs: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "-i")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(inputs, vec!["clip0.mp4", "clip1.mp4", "override0.mp3", "music.mp3"]);
+
+        let filter_complex = args
+            .iter()
+            .position(|a| a == "-filter_complex")
+            .map(|i| args[i + 1].as_str())
+            .unwrap();
+        assert!(filter_complex.contains("[2:a]")); // clip0's replacement audio
+        assert!(filter_complex.contains("[3:a]")); // movie music input
+        assert!(filter_complex.contains("amix")); // Mix blend, not Replace
+    }
+
+    #[test]
+    fn movie_audio_replace_mode_drops_per_clip_overrides_and_their_inputs() {
+        let clips = vec![
+            clip(
+                "c0",
+                "clip0.mp4",
+                true,
+                Some(AudioOverride { source_path: "override0.mp3".into(), mode: AudioMode::Loop, gain_db: 0.0 }),
+            ),
+            clip("c1", "clip1.mp4", true, None),
+        ];
+        let movie_audio = MovieAudioOverride {
+            source_path: "music.mp3".into(),
+            blend_mode: AudioBlendMode::Replace,
+            fill_mode: AudioMode::Pad,
+            gain_db: 0.0,
+            fade_in_sec: 0.0,
+            fade_out_sec: 0.0,
+        };
+        let (args, _total) = build_ffmpeg_args(&request(clips, Some(movie_audio)));
+
+        // override0.mp3 must never be added as an input - Replace mode makes
+        // the per-clip override moot, so it shouldn't even reach ffmpeg.
+        let inputs: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "-i")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(inputs, vec!["clip0.mp4", "clip1.mp4", "music.mp3"]);
+
+        let filter_complex = args
+            .iter()
+            .position(|a| a == "-filter_complex")
+            .map(|i| args[i + 1].as_str())
+            .unwrap();
+        assert!(filter_complex.contains("[2:a]")); // music is input index 2 now, not 3
+        assert!(!filter_complex.contains("amix")); // Replace, not Mix
+    }
+
+    /// End-to-end sanity check against the real vendored ffmpeg binary:
+    /// generates tiny synthetic clips/audio with distinct tones, builds the
+    /// exact production args for a per-clip-override + movie-audio-mix
+    /// scenario, and confirms ffmpeg actually accepts and runs the graph.
+    /// Ignored by default (needs the vendored sidecar binaries); run with
+    /// `cargo test -- --ignored real_ffmpeg`.
+    #[test]
+    #[ignore]
+    fn real_ffmpeg_accepts_per_clip_override_plus_movie_audio_mix_graph() {
+        let dir = std::env::temp_dir().join("videoclipper_m6_verify");
+        let _ = std::fs::create_dir_all(&dir);
+        let ffmpeg = std::env::current_dir()
+            .unwrap()
+            .join("binaries/ffmpeg-x86_64-unknown-linux-gnu");
+        assert!(ffmpeg.exists(), "run scripts/fetch-ffmpeg.sh linux first");
+
+        let gen = |name: &str, tone_hz: u32, out: &std::path::Path| {
+            let status = std::process::Command::new(&ffmpeg)
+                .args([
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc=size=320x240:rate=25:duration=3",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("sine=frequency={tone_hz}:duration=3"),
+                    "-shortest",
+                    out.to_str().unwrap(),
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success(), "failed to generate {name}");
+        };
+
+        let clip0 = dir.join("clip0.mp4");
+        let clip1 = dir.join("clip1.mp4");
+        let override0 = dir.join("override0.mp3");
+        let music = dir.join("music.mp3");
+        let out = dir.join("out.mp4");
+
+        gen("clip0", 440, &clip0);
+        gen("clip1", 220, &clip1);
+        let status = std::process::Command::new(&ffmpeg)
+            .args(["-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=1", override0.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = std::process::Command::new(&ffmpeg)
+            .args(["-y", "-f", "lavfi", "-i", "sine=frequency=110:duration=2", music.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let clips = vec![
+            clip(
+                "c0",
+                clip0.to_str().unwrap(),
+                true,
+                Some(AudioOverride { source_path: override0.to_str().unwrap().into(), mode: AudioMode::Loop, gain_db: -3.0 }),
+            ),
+            clip("c1", clip1.to_str().unwrap(), true, None),
+        ];
+        let movie_audio = MovieAudioOverride {
+            source_path: music.to_str().unwrap().into(),
+            blend_mode: AudioBlendMode::Mix,
+            fill_mode: AudioMode::Loop,
+            gain_db: -12.0,
+            fade_in_sec: 0.2,
+            fade_out_sec: 0.2,
+        };
+        let mut req = request(clips, Some(movie_audio));
+        req.output_path = out.to_str().unwrap().into();
+        let (mut args, _total) = build_ffmpeg_args(&req);
+        args.push("-nostats".into());
+        args.push(req.output_path.clone());
+
+        let output = std::process::Command::new(&ffmpeg).args(&args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "ffmpeg failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(out.exists());
+        assert!(std::fs::metadata(&out).unwrap().len() > 0);
+    }
 }

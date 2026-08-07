@@ -3,11 +3,22 @@
 
 export type AudioMode = "loop" | "pad";
 
+export const AUDIO_MODE_LABELS: Record<AudioMode, string> = {
+  loop: "Loopa",
+  pad: "Tystnad i slutet",
+};
+
 export interface AudioOverride {
   sourcePath: string;
   mode: AudioMode;
   gainDb: number;
 }
+
+export const DEFAULT_CLIP_AUDIO_OVERRIDE: AudioOverride = {
+  sourcePath: "",
+  mode: "loop",
+  gainDb: 0,
+};
 
 export interface Clip {
   id: string;
@@ -16,6 +27,8 @@ export interface Clip {
   sourceDurationSec: number;
   trimInSec: number;
   trimOutSec: number;
+  /** Whether the source file has an audio stream at all (from probeClip). */
+  hasAudio: boolean;
   audioOverride: AudioOverride | null;
 }
 
@@ -101,6 +114,55 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   audioBitrateKbps: 192,
   faststart: true,
 };
+
+export interface ExportPreset {
+  id: string;
+  label: string;
+  crf: number;
+  x264Preset: string;
+  audioBitrateKbps: number;
+  maxWidth: number;
+}
+
+export const EXPORT_PRESETS: ExportPreset[] = [
+  {
+    id: "web-recommended",
+    label: "Webb (rekommenderad)",
+    crf: 20,
+    x264Preset: "medium",
+    audioBitrateKbps: 192,
+    maxWidth: 1920,
+  },
+  {
+    id: "web-fast",
+    label: "Webb (mindre/snabbare)",
+    crf: 26,
+    x264Preset: "veryfast",
+    audioBitrateKbps: 128,
+    maxWidth: 1280,
+  },
+  {
+    id: "web-hq",
+    label: "Webb (hög kvalitet)",
+    crf: 17,
+    x264Preset: "slow",
+    audioBitrateKbps: 256,
+    maxWidth: 3840,
+  },
+];
+
+export function applyExportPreset(settings: ExportSettings, presetId: string): ExportSettings {
+  const preset = EXPORT_PRESETS.find((p) => p.id === presetId);
+  if (!preset) return settings;
+  return {
+    ...settings,
+    preset: preset.id,
+    crf: preset.crf,
+    x264Preset: preset.x264Preset,
+    audioBitrateKbps: preset.audioBitrateKbps,
+    maxWidth: preset.maxWidth,
+  };
+}
 
 export interface Project {
   version: number;

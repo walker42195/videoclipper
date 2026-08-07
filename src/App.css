@@ -287,6 +287,29 @@ button {
   flex-shrink: 0;
 }
 
+.clip-audio-btn-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.clip-audio-btn {
+  padding: 0.3em 0.5em;
+  font-size: 0.8em;
+  margin-right: 0.3em;
+  box-shadow: none;
+  background-color: transparent;
+  opacity: 0.5;
+}
+
+.clip-audio-btn-active {
+  opacity: 1;
+  background-color: #e8e8e8;
+}
+
+.clip-audio-picker {
+  width: 220px;
+}
+
 .progress-overlay {
   display: flex;
   align-items: center;
@@ -309,6 +332,44 @@ button {
 
 .status-message {
   opacity: 0.8;
+}
+
+.status-message-pre {
+  opacity: 0.85;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 0.75em 1em;
+  background-color: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  font-family: monospace;
+  font-size: 0.8em;
+}
+
+.export-panel {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75em 1em;
+  background-color: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  text-align: left;
+}
+
+.export-preset-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9em;
+}
+
+.export-preset-details {
+  font-size: 0.85em;
+  opacity: 0.7;
 }
 
 .movie-player {
@@ -509,6 +570,19 @@ button {
   }
 
   .audio-panel {
+    background-color: #0f0f0f98;
+  }
+
+  .clip-audio-btn-active {
+    background-color: #0f0f0f98;
+  }
+
+  .status-message-pre {
+    background-color: #0f0f0f98;
+    color: #ffbaba;
+  }
+
+  .export-panel {
     background-color: #0f0f0f98;
   }
 }

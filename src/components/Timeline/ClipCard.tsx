@@ -4,6 +4,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Clip } from "../../types";
 import { extractThumbnail } from "../../lib/tauriCommands";
 import { useProjectStore } from "../../state/projectStore";
+import { ClipAudioPicker } from "./ClipAudioPicker";
 
 const MIN_CLIP_DURATION_SEC = 0.2;
 
@@ -30,7 +31,13 @@ export function ClipCard({ clip, index, onRemove, onTrimChange }: ClipCardProps)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: clip.id,
   });
-  const { previewClipId, setPreviewClipId } = useProjectStore();
+  const { previewClipId, setPreviewClipId, movieAudioOverride, updateClipAudioOverride } = useProjectStore();
+  const [audioPickerOpen, setAudioPickerOpen] = useState(false);
+  // A whole-movie override in Replace mode drops the timeline's own audio
+  // entirely, so per-clip replacements have no effect - gray the control out
+  // rather than let it silently do nothing. Mix mode still layers per-clip
+  // audio underneath the music, so it stays active there.
+  const clipAudioDisabled = movieAudioOverride?.blendMode === "Replace";
 
   const [thumbnail, setThumbnail] = useState<string | null>(null);
   const dragState = useRef<{
@@ -143,6 +150,30 @@ export function ClipCard({ clip, index, onRemove, onTrimChange }: ClipCardProps)
         onPointerUp={endTrimDrag}
         title="Dra för att trimma klippets slut"
       />
+
+      <div className="clip-audio-btn-wrapper">
+        <button
+          className={`clip-audio-btn ${clip.audioOverride ? "clip-audio-btn-active" : ""}`}
+          onClick={() => setAudioPickerOpen((v) => !v)}
+          disabled={clipAudioDisabled}
+          title={
+            clipAudioDisabled
+              ? "Inaktiv - filmens ljud ersätts helt av bakgrundsmusiken"
+              : clip.audioOverride
+                ? "Klippets ljud är ersatt"
+                : "Ersätt klippets ljud"
+          }
+        >
+          🎵
+        </button>
+        {audioPickerOpen && !clipAudioDisabled && (
+          <ClipAudioPicker
+            current={clip.audioOverride}
+            onChange={(override) => updateClipAudioOverride(clip.id, override)}
+            onClose={() => setAudioPickerOpen(false)}
+          />
+        )}
+      </div>
 
       <button className="remove-btn" onClick={() => onRemove(clip.id)}>
         Ta bort

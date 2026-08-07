@@ -3,15 +3,25 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { dirname } from "@tauri-apps/api/path";
 import { useProjectStore } from "./state/projectStore";
-import { exportProject, probeClip } from "./lib/tauriCommands";
+import {
+  availableDiskSpaceBytes,
+  cancelExport,
+  exportProject,
+  loadProject,
+  probeClip,
+  saveProject,
+} from "./lib/tauriCommands";
 import { useBlobUrl } from "./lib/useBlobUrl";
 import { Clip, ExportProgress } from "./types";
 import { Timeline } from "./components/Timeline/Timeline";
 import { ClipPreviewPlayer } from "./components/Timeline/ClipPreviewPlayer";
 import { MovieAudioPanel } from "./components/AudioPanel/MovieAudioPanel";
+import { ExportPanel } from "./components/ExportPanel/ExportPanel";
 import "./App.css";
 
 const LAST_IMPORT_DIR_KEY = "videoclipper:lastImportDir";
+const LAST_PROJECT_DIR_KEY = "videoclipper:lastProjectDir";
+const LOW_DISK_WARNING_BYTES = 500 * 1024 * 1024;
 
 function fileNameFromPath(path: string): string {
   return path.split(/[/\\]/).pop() ?? path;
@@ -23,12 +33,18 @@ function formatDuration(sec: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+function formatBytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+}
+
 function App() {
-  const { clips, transitions, movieAudioOverride, addClip, exportSettings } = useProjectStore();
+  const { clips, transitions, movieAudioOverride, addClip, exportSettings, toProject, loadProject: hydrateProject } =
+    useProjectStore();
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [exportedMoviePath, setExportedMoviePath] = useState<string | null>(null);
+  const [currentProjectPath, setCurrentProjectPath] = useState<string | null>(null);
   const exportedMovieUrl = useBlobUrl(exportedMoviePath);
 
   useEffect(() => {
@@ -61,6 +77,7 @@ function App() {
           sourceDurationSec: meta.durationSec,
           trimInSec: 0,
           trimOutSec: meta.durationSec,
+          hasAudio: meta.hasAudio,
           audioOverride: null,
         };
         addClip(clip);
@@ -86,14 +103,87 @@ function App() {
     setProgress(null);
     setExportedMoviePath(null);
     setStatusMessage("Exporterar...");
+
+    try {
+      const freeBytes = await availableDiskSpaceBytes(outputPath);
+      if (freeBytes < LOW_DISK_WARNING_BYTES) {
+        setStatusMessage(`Varning: bara ${formatBytes(freeBytes)} ledigt diskutrymme. Fortsätter ändå...`);
+      }
+    } catch {
+      // Advisory only - if the check itself fails, just proceed with export.
+    }
+
     try {
       const result = await exportProject(clips, transitions, movieAudioOverride, exportSettings, outputPath);
       setStatusMessage(`Klart! Sparad till ${result.outputPath}`);
       setExportedMoviePath(result.outputPath);
     } catch (err) {
-      setStatusMessage(`Export misslyckades: ${err}`);
+      if (String(err) === "cancelled") {
+        setStatusMessage("Export avbruten.");
+      } else {
+        setStatusMessage(`Export misslyckades:\n${err}`);
+      }
     } finally {
       setBusy(false);
+      setProgress(null);
+    }
+  }
+
+  async function handleCancelExport() {
+    setStatusMessage("Avbryter export...");
+    try {
+      await cancelExport();
+    } catch (err) {
+      setStatusMessage(`Kunde inte avbryta: ${err}`);
+    }
+  }
+
+  async function handleSaveProject(forcePrompt: boolean) {
+    let path = forcePrompt ? null : currentProjectPath;
+    if (!path) {
+      path = await save({
+        defaultPath: localStorage.getItem(LAST_PROJECT_DIR_KEY)
+          ? `${localStorage.getItem(LAST_PROJECT_DIR_KEY)}/projekt.vcproj.json`
+          : "projekt.vcproj.json",
+        filters: [{ name: "VideoClipper-projekt", extensions: ["json"] }],
+      });
+      if (!path) return;
+    }
+    try {
+      await saveProject(path, toProject());
+      setCurrentProjectPath(path);
+      localStorage.setItem(LAST_PROJECT_DIR_KEY, await dirname(path));
+      setStatusMessage(`Projekt sparat till ${path}`);
+    } catch (err) {
+      setStatusMessage(`Kunde inte spara projekt: ${err}`);
+    }
+  }
+
+  async function handleOpenProject() {
+    const selected = await open({
+      multiple: false,
+      defaultPath: localStorage.getItem(LAST_PROJECT_DIR_KEY) ?? undefined,
+      filters: [{ name: "VideoClipper-projekt", extensions: ["json"] }],
+    });
+    if (!selected || Array.isArray(selected)) return;
+
+    try {
+      const result = await loadProject(selected);
+      hydrateProject(result.project);
+      setCurrentProjectPath(selected);
+      localStorage.setItem(LAST_PROJECT_DIR_KEY, await dirname(selected));
+      setExportedMoviePath(null);
+      if (result.missingMedia.length > 0) {
+        setStatusMessage(
+          `Projekt öppnat, men ${result.missingMedia.length} klipp saknas på disk: ${result.missingMedia
+            .map(fileNameFromPath)
+            .join(", ")}`,
+        );
+      } else {
+        setStatusMessage(`Projekt öppnat: ${result.project.name}`);
+      }
+    } catch (err) {
+      setStatusMessage(`Kunde inte öppna projekt: ${err}`);
     }
   }
 
@@ -107,8 +197,21 @@ function App() {
         <button onClick={handleAddClips} disabled={busy}>
           + Lägg till klipp
         </button>
-        <button onClick={handleExport} disabled={busy || clips.length === 0}>
-          Exportera film
+        {!busy ? (
+          <button onClick={handleExport} disabled={clips.length === 0}>
+            Exportera film
+          </button>
+        ) : (
+          <button onClick={handleCancelExport}>Avbryt export</button>
+        )}
+        <button onClick={() => handleSaveProject(false)} disabled={busy}>
+          Spara projekt
+        </button>
+        <button onClick={() => handleSaveProject(true)} disabled={busy}>
+          Spara som...
+        </button>
+        <button onClick={handleOpenProject} disabled={busy}>
+          Öppna projekt
         </button>
         <span className="total-duration">Total längd: {formatDuration(totalDuration)}</span>
       </div>
@@ -118,6 +221,8 @@ function App() {
       <Timeline />
 
       <MovieAudioPanel />
+
+      <ExportPanel />
 
       {progress && (
         <div className="progress-overlay">
@@ -130,7 +235,12 @@ function App() {
         </div>
       )}
 
-      {statusMessage && <p className="status-message">{statusMessage}</p>}
+      {statusMessage &&
+        (statusMessage.includes("\n") ? (
+          <pre className="status-message-pre">{statusMessage}</pre>
+        ) : (
+          <p className="status-message">{statusMessage}</p>
+        ))}
 
       {exportedMovieUrl && (
         <div className="movie-player">

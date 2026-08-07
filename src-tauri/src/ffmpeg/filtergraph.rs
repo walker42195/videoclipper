@@ -89,15 +89,25 @@ pub fn compute_junctions(
     (placements, merged_duration)
 }
 
+/// A per-clip audio replacement: a different ffmpeg input, looped or padded
+/// to the clip's own on-timeline duration and gain-adjusted, standing in for
+/// the clip's original audio track.
+#[derive(Debug, Clone, Copy)]
+pub struct AudioReplacement {
+    pub input_index: usize,
+    pub fill_mode: AudioMode,
+    pub gain_db: f64,
+}
+
 /// One normalized input clip going into a graph.
 #[derive(Debug, Clone)]
 pub struct GraphClip {
     pub input_index: usize,
     pub trim_in_sec: f64,
     pub trim_out_sec: f64,
-    /// If Some, this clip's audio comes from a *different* input index
-    /// (a replacement audio file) instead of `input_index`'s own audio.
-    pub audio_input_index: Option<usize>,
+    /// If Some, this clip's audio comes from a replacement file instead of
+    /// its own. Takes priority over `has_audio`.
+    pub audio_replacement: Option<AudioReplacement>,
     pub has_audio: bool,
 }
 
@@ -125,25 +135,47 @@ fn normalize_video_chain(clip: &GraphClip, target: NormalizeTarget, label: &str)
 }
 
 fn normalize_audio_chain(clip: &GraphClip, target: NormalizeTarget, label: &str) -> String {
-    let src = clip.audio_input_index.unwrap_or(clip.input_index);
-    if clip.audio_input_index.is_none() {
+    let clip_duration = clip.trim_out_sec - clip.trim_in_sec;
+
+    if let Some(repl) = &clip.audio_replacement {
+        // Replacement audio: loop or pad it to the clip's own on-timeline
+        // duration and apply its gain right here, so downstream code (concat/
+        // xfade chains) never needs to know a replacement happened.
+        let fill = match repl.fill_mode {
+            AudioMode::Loop => "aloop=loop=-1:size=2147483647,",
+            AudioMode::Pad => "apad,",
+        };
+        format!(
+            "[{i}:a]aformat=sample_rates={sr}:channel_layouts=stereo,{fill}atrim=0:{dur},\
+             asetpts=PTS-STARTPTS,volume={gain}dB[{label}];\n",
+            i = repl.input_index,
+            sr = target.sample_rate,
+            fill = fill,
+            dur = clip_duration,
+            gain = repl.gain_db,
+            label = label,
+        )
+    } else if clip.has_audio {
         // Original audio: trim to match the video's trim window.
         format!(
             "[{i}:a]atrim=start={in_}:end={out},asetpts=PTS-STARTPTS,\
              aformat=sample_rates={sr}:channel_layouts=stereo[{label}];\n",
-            i = src,
+            i = clip.input_index,
             in_ = clip.trim_in_sec,
             out = clip.trim_out_sec,
             sr = target.sample_rate,
             label = label,
         )
     } else {
-        // Replacement audio: caller is expected to have already trimmed/
-        // looped it to the clip's duration upstream; just reformat here.
+        // No source audio and no replacement: synthesize silence for this
+        // clip's duration so a mixed timeline (some clips with audio, some
+        // without) still concatenates/crossfades into one uniform audio
+        // stream instead of losing audio entirely.
         format!(
-            "[{i}:a]aformat=sample_rates={sr}:channel_layouts=stereo[{label}];\n",
-            i = src,
+            "anullsrc=channel_layout=stereo:sample_rate={sr},atrim=0:{dur},\
+             asetpts=PTS-STARTPTS[{label}];\n",
             sr = target.sample_rate,
+            dur = clip_duration,
             label = label,
         )
     }
@@ -157,6 +189,8 @@ fn normalize_audio_chain(clip: &GraphClip, target: NormalizeTarget, label: &str)
 pub fn build_concat_graph(clips: &[GraphClip], target: NormalizeTarget) -> (String, Vec<String>) {
     assert!(!clips.is_empty(), "need at least one clip");
 
+    let any_audio = clips.iter().any(|c| c.has_audio || c.audio_replacement.is_some());
+
     let mut graph = String::new();
     let mut v_labels = Vec::with_capacity(clips.len());
     let mut a_labels = Vec::with_capacity(clips.len());
@@ -166,14 +200,14 @@ pub fn build_concat_graph(clips: &[GraphClip], target: NormalizeTarget) -> (Stri
         graph.push_str(&normalize_video_chain(clip, target, &vlabel));
         v_labels.push(vlabel);
 
-        if clip.has_audio || clip.audio_input_index.is_some() {
+        if any_audio {
             let alabel = format!("a{idx}");
             graph.push_str(&normalize_audio_chain(clip, target, &alabel));
             a_labels.push(alabel);
         }
     }
 
-    let has_audio = a_labels.len() == clips.len();
+    let has_audio = any_audio;
 
     if clips.len() == 1 {
         graph.push_str(&format!("[{}]null[vout];\n", v_labels[0]));
@@ -252,6 +286,8 @@ pub fn build_transition_graph(
     let clamped = clamp_transitions(&clip_durations, &junction_inputs);
     let (placements, total_duration_sec) = compute_junctions(&clip_durations, &clamped);
 
+    let any_audio = clips.iter().any(|c| c.has_audio || c.audio_replacement.is_some());
+
     let mut graph = String::new();
     let mut v_labels = Vec::with_capacity(clips.len());
     let mut a_labels = Vec::with_capacity(clips.len());
@@ -261,13 +297,13 @@ pub fn build_transition_graph(
         graph.push_str(&normalize_video_chain(clip, target, &vlabel));
         v_labels.push(vlabel);
 
-        if clip.has_audio || clip.audio_input_index.is_some() {
+        if any_audio {
             let alabel = format!("a{idx}");
             graph.push_str(&normalize_audio_chain(clip, target, &alabel));
             a_labels.push(alabel);
         }
     }
-    let has_audio = a_labels.len() == clips.len();
+    let has_audio = any_audio;
 
     let mut prev_v = v_labels[0].clone();
     let mut prev_a = has_audio.then(|| a_labels[0].clone());
@@ -431,7 +467,7 @@ mod tests {
             input_index: 0,
             trim_in_sec: 0.0,
             trim_out_sec: 5.0,
-            audio_input_index: None,
+            audio_replacement: None,
             has_audio: true,
         }];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
@@ -444,8 +480,8 @@ mod tests {
     #[test]
     fn concat_graph_multi_clip_uses_concat_filter() {
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_input_index: None, has_audio: true },
-            GraphClip { input_index: 1, trim_in_sec: 1.0, trim_out_sec: 4.0, audio_input_index: None, has_audio: true },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true },
+            GraphClip { input_index: 1, trim_in_sec: 1.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: true },
         ];
         let target = NormalizeTarget { width: 1280, height: 720, fps: 24, sample_rate: 44100 };
         let (graph, maps) = build_concat_graph(&clips, target);
@@ -456,8 +492,8 @@ mod tests {
     #[test]
     fn concat_graph_no_audio_omits_audio_map() {
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_input_index: None, has_audio: false },
-            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 3.0, audio_input_index: None, has_audio: false },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: false },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 3.0, audio_replacement: None, has_audio: false },
         ];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let (graph, maps) = build_concat_graph(&clips, target);
@@ -466,12 +502,61 @@ mod tests {
     }
 
     #[test]
+    fn concat_graph_synthesizes_silence_for_clips_missing_audio() {
+        // Mixed timeline: clip 0 has real audio, clip 1 doesn't. The audio
+        // track must still be included (not dropped entirely), with clip 1
+        // getting a silent stand-in of its own duration.
+        let clips = vec![
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 3.0, audio_replacement: None, has_audio: false },
+        ];
+        let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
+        let (graph, maps) = build_concat_graph(&clips, target);
+        assert!(graph.contains("[1:a]atrim") == false); // clip 1 has no real audio input to trim
+        assert!(graph.contains("anullsrc=channel_layout=stereo:sample_rate=48000,atrim=0:3,asetpts=PTS-STARTPTS[a1]"));
+        assert!(graph.contains("concat=n=2:v=1:a=1[vout][aout]"));
+        assert_eq!(maps, vec!["-map", "[vout]", "-map", "[aout]"]);
+    }
+
+    #[test]
+    fn concat_graph_uses_replacement_audio_with_loop_fill() {
+        let clips = vec![GraphClip {
+            input_index: 0,
+            trim_in_sec: 0.0,
+            trim_out_sec: 5.0,
+            audio_replacement: Some(AudioReplacement { input_index: 4, fill_mode: AudioMode::Loop, gain_db: -3.0 }),
+            has_audio: true, // replacement takes priority over the clip's own audio
+        }];
+        let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
+        let (graph, _maps) = build_concat_graph(&clips, target);
+        assert!(graph.contains(
+            "[4:a]aformat=sample_rates=48000:channel_layouts=stereo,aloop=loop=-1:size=2147483647,atrim=0:5,asetpts=PTS-STARTPTS,volume=-3dB[a0]"
+        ));
+    }
+
+    #[test]
+    fn concat_graph_uses_replacement_audio_with_pad_fill() {
+        let clips = vec![GraphClip {
+            input_index: 0,
+            trim_in_sec: 0.0,
+            trim_out_sec: 5.0,
+            audio_replacement: Some(AudioReplacement { input_index: 4, fill_mode: AudioMode::Pad, gain_db: 0.0 }),
+            has_audio: false,
+        }];
+        let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
+        let (graph, _maps) = build_concat_graph(&clips, target);
+        assert!(graph.contains(
+            "[4:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=0:5,asetpts=PTS-STARTPTS,volume=0dB[a0]"
+        ));
+    }
+
+    #[test]
     fn transition_graph_single_clip_delegates_to_concat_graph() {
         let clips = vec![GraphClip {
             input_index: 0,
             trim_in_sec: 0.0,
             trim_out_sec: 5.0,
-            audio_input_index: None,
+            audio_replacement: None,
             has_audio: true,
         }];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
@@ -486,9 +571,9 @@ mod tests {
         // Matches the plan's worked example: 5s/4s/6s clips, fade 1s at
         // 0->1, dissolve 0.75s at 1->2.
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_input_index: None, has_audio: true },
-            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_input_index: None, has_audio: true },
-            GraphClip { input_index: 2, trim_in_sec: 0.0, trim_out_sec: 6.0, audio_input_index: None, has_audio: true },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: true },
+            GraphClip { input_index: 2, trim_in_sec: 0.0, trim_out_sec: 6.0, audio_replacement: None, has_audio: true },
         ];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let transitions = [
@@ -510,8 +595,8 @@ mod tests {
     #[test]
     fn transition_graph_no_audio_omits_acrossfade_and_audio_map() {
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_input_index: None, has_audio: false },
-            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_input_index: None, has_audio: false },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: false },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: false },
         ];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let transitions = [TransitionJunction { transition_type: TransitionType::Wipeleft, duration_sec: 1.0 }];
@@ -526,8 +611,8 @@ mod tests {
     #[should_panic(expected = "need exactly one fewer transition than clips")]
     fn transition_graph_rejects_mismatched_transition_count() {
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_input_index: None, has_audio: true },
-            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_input_index: None, has_audio: true },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: true },
         ];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let _ = build_transition_graph(&clips, target, &[]);

@@ -37,10 +37,18 @@ export function exportProject(
   });
 }
 
+export function cancelExport(): Promise<void> {
+  return invoke("cancel_export");
+}
+
 export function saveProject(path: string, project: Project): Promise<void> {
   return invoke("save_project", { path, project });
 }
 
 export function loadProject(path: string): Promise<LoadProjectResultDto> {
   return invoke("load_project", { path });
+}
+
+export function availableDiskSpaceBytes(path: string): Promise<number> {
+  return invoke("available_disk_space_bytes", { path });
 }

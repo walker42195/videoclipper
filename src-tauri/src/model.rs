@@ -37,6 +37,10 @@ pub struct Clip {
     pub source_duration_sec: f64,
     pub trim_in_sec: f64,
     pub trim_out_sec: f64,
+    /// Whether the source file has an audio stream at all, as reported by
+    /// probe_clip. Clips without one get silence synthesized in their place
+    /// so the audio chain stays uniform across a mixed timeline.
+    pub has_audio: bool,
     pub audio_override: Option<AudioOverride>,
 }
 

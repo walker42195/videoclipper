@@ -1,9 +1,11 @@
 import { create } from "zustand";
 import {
+  AudioOverride,
   Clip,
   DEFAULT_EXPORT_SETTINGS,
   ExportSettings,
   MovieAudioOverride,
+  Project,
   Transition,
   TransitionType,
 } from "../types";
@@ -19,6 +21,7 @@ function pruneInvalidTransitions(clips: Clip[], transitions: Transition[]): Tran
 }
 
 interface ProjectState {
+  id: string;
   name: string;
   clips: Clip[];
   transitions: Transition[];
@@ -30,14 +33,21 @@ interface ProjectState {
   removeClip: (id: string) => void;
   moveClip: (fromIndex: number, toIndex: number) => void;
   updateClipTrim: (id: string, trimInSec: number, trimOutSec: number) => void;
+  updateClipAudioOverride: (id: string, override: AudioOverride | null) => void;
   setTransition: (fromClipId: string, toClipId: string, type: TransitionType, durationSec: number) => void;
   clearTransition: (fromClipId: string, toClipId: string) => void;
   setMovieAudioOverride: (override: MovieAudioOverride | null) => void;
   setExportSettings: (settings: ExportSettings) => void;
   setPreviewClipId: (id: string | null) => void;
+  setName: (name: string) => void;
+  /** Replaces the whole project state at once (used by "Öppna projekt"). */
+  loadProject: (project: Project) => void;
+  /** Snapshots the current store into a serializable Project (used by "Spara projekt"). */
+  toProject: () => Project;
 }
 
-export const useProjectStore = create<ProjectState>((set) => ({
+export const useProjectStore = create<ProjectState>((set, get) => ({
+  id: crypto.randomUUID(),
   name: "Namnlöst projekt",
   clips: [],
   transitions: [],
@@ -66,6 +76,10 @@ export const useProjectStore = create<ProjectState>((set) => ({
     set((s) => ({
       clips: s.clips.map((c) => (c.id === id ? { ...c, trimInSec, trimOutSec } : c)),
     })),
+  updateClipAudioOverride: (id, audioOverride) =>
+    set((s) => ({
+      clips: s.clips.map((c) => (c.id === id ? { ...c, audioOverride } : c)),
+    })),
   setTransition: (fromClipId, toClipId, type, durationSec) =>
     set((s) => ({
       transitions: [
@@ -80,4 +94,27 @@ export const useProjectStore = create<ProjectState>((set) => ({
   setMovieAudioOverride: (movieAudioOverride) => set({ movieAudioOverride }),
   setExportSettings: (exportSettings) => set({ exportSettings }),
   setPreviewClipId: (previewClipId) => set({ previewClipId }),
+  setName: (name) => set({ name }),
+  loadProject: (project) =>
+    set({
+      id: project.id,
+      name: project.name,
+      clips: project.clips,
+      transitions: project.transitions,
+      movieAudioOverride: project.movieAudioOverride,
+      exportSettings: project.exportSettings,
+      previewClipId: null,
+    }),
+  toProject: () => {
+    const s = get();
+    return {
+      version: 1,
+      id: s.id,
+      name: s.name,
+      clips: s.clips,
+      transitions: s.transitions,
+      movieAudioOverride: s.movieAudioOverride,
+      exportSettings: s.exportSettings,
+    };
+  },
 }));
