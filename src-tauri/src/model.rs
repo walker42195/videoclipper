@@ -27,19 +27,56 @@ pub struct AudioOverride {
     pub gain_db: f64,
 }
 
+/// What a timeline entry's video actually comes from. `Video` is the
+/// original, only kind for a long time; `Image` and `TextCard` reuse every
+/// other `Clip` field (trim/duration, transitions, audio override) as-is -
+/// an image becomes an infinite-duration video stream via `-loop 1`, and a
+/// text card becomes a generated `color=` source with `drawtext` layered on,
+/// so both flow through the exact same normalize/xfade/silence pipeline a
+/// video clip does. `trim_in_sec` is always 0 and `trim_out_sec` is the
+/// on-timeline display duration for these two kinds - there is no real
+/// source file duration to trim within.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ClipSource {
+    Video,
+    Image,
+    TextCard {
+        text: String,
+        /// `#RRGGBB`, validated server-side before it ever reaches an
+        /// ffmpeg filter string (see `sanitize_hex_color` in commands::export).
+        background_color: String,
+        font_color: String,
+    },
+}
+
+impl Default for ClipSource {
+    fn default() -> Self {
+        ClipSource::Video
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Clip {
     pub id: String,
+    /// Old saved projects predate this field entirely; defaulting to Video
+    /// (its only possible meaning back then) keeps `load_project` working
+    /// on them without a migration step.
+    #[serde(default)]
+    pub source: ClipSource,
+    /// Video/Image: path to the source file. TextCard: unused (empty string).
     pub source_path: String,
     /// Full duration of the source file, as reported by probe_clip - the
     /// upper bound trim handles in the UI can't drag `trim_out_sec` past.
+    /// Not meaningful for Image/TextCard (there is no source file duration).
     pub source_duration_sec: f64,
     pub trim_in_sec: f64,
     pub trim_out_sec: f64,
     /// Whether the source file has an audio stream at all, as reported by
     /// probe_clip. Clips without one get silence synthesized in their place
-    /// so the audio chain stays uniform across a mixed timeline.
+    /// so the audio chain stays uniform across a mixed timeline. Always
+    /// false for Image/TextCard.
     pub has_audio: bool,
     pub audio_override: Option<AudioOverride>,
 }

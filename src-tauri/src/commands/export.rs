@@ -1,14 +1,45 @@
 use crate::ffmpeg::filtergraph::{
     build_background_music_chain, build_transition_graph, AudioReplacement, BackgroundMusicSpec,
-    GraphClip, NormalizeTarget, TransitionJunction, CUT_DURATION_SEC,
+    GraphClip, NormalizeTarget, TextOverlaySpec, TransitionJunction, CUT_DURATION_SEC,
 };
 use crate::ffmpeg::progress::ProgressParser;
-use crate::model::{AudioBlendMode, Clip, ExportSettings, MovieAudioOverride, Transition, TransitionType};
+use crate::model::{
+    AudioBlendMode, Clip, ClipSource, ExportSettings, MovieAudioOverride, Transition, TransitionType,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
+
+/// Validates a color is `#RRGGBB` before it ever reaches an ffmpeg filter
+/// string; anything else (which shouldn't happen from the color-picker-only
+/// UI, but this is a value that crossed the IPC boundary) falls back to a
+/// safe default rather than being passed through.
+fn sanitize_hex_color(input: &str, fallback: &str) -> String {
+    let valid = input.len() == 7 && input.starts_with('#') && input[1..].chars().all(|c| c.is_ascii_hexdigit());
+    if valid { input.to_string() } else { fallback.to_string() }
+}
+
+/// Writes each text card's text to its own temp file (ffmpeg's drawtext
+/// reads text from disk via `textfile=` rather than inline, see
+/// `TextOverlaySpec`'s doc comment for why). Returns a map from clip id to
+/// that clip's temp file path; callers must remove these files themselves
+/// once ffmpeg no longer needs them.
+fn write_text_card_files(clips: &[Clip]) -> Result<HashMap<String, PathBuf>, String> {
+    let mut paths = HashMap::new();
+    for clip in clips {
+        if let ClipSource::TextCard { text, .. } = &clip.source {
+            let path = std::env::temp_dir().join(format!("videoclipper_textcard_{}.txt", clip.id));
+            std::fs::write(&path, text).map_err(|e| format!("failed to write text card file: {e}"))?;
+            paths.insert(clip.id.clone(), path);
+        }
+    }
+    Ok(paths)
+}
 
 /// Tracks the currently-running export's ffmpeg child so `cancel_export` can
 /// kill it, and whether the last termination was a deliberate cancel (vs. a
@@ -83,7 +114,11 @@ pub struct ExportResult {
 /// per-clip replacements stay active and get layered under the music - only
 /// `Replace` makes them moot. The UI's per-clip audio panel must gray out
 /// under the exact same condition, or the two would silently disagree.
-fn build_ffmpeg_args(request: &ExportRequest) -> (Vec<String>, f64) {
+fn build_ffmpeg_args(
+    request: &ExportRequest,
+    text_card_paths: &HashMap<String, PathBuf>,
+    font_path: &str,
+) -> (Vec<String>, f64) {
     let target = NormalizeTarget {
         width: request.export_settings.max_width,
         height: request.export_settings.max_width * 9 / 16,
@@ -93,8 +128,37 @@ fn build_ffmpeg_args(request: &ExportRequest) -> (Vec<String>, f64) {
 
     let mut args: Vec<String> = vec!["-y".into()];
     for clip in &request.clips {
-        args.push("-i".into());
-        args.push(clip.source_path.clone());
+        match &clip.source {
+            ClipSource::Video => {
+                args.push("-i".into());
+                args.push(clip.source_path.clone());
+            }
+            ClipSource::Image => {
+                // -loop makes a still image an infinite-duration video
+                // stream; the same trim=start=0:end=<duration> filter every
+                // other clip gets (via normalize_video_chain) caps it, so no
+                // other part of the pipeline needs to know this isn't video.
+                args.push("-loop".into());
+                args.push("1".into());
+                args.push("-i".into());
+                args.push(clip.source_path.clone());
+            }
+            ClipSource::TextCard { background_color, .. } => {
+                // A generated solid-color source stands in for a "file";
+                // drawtext (added below via text_overlay) paints the text
+                // onto it. Still exactly one -i per clip, like Video/Image.
+                let duration = (clip.trim_out_sec - clip.trim_in_sec).max(0.1);
+                args.push("-f".into());
+                args.push("lavfi".into());
+                args.push("-i".into());
+                args.push(format!(
+                    "color=c={color}:s={w}x{h}:d={duration}",
+                    color = sanitize_hex_color(background_color, "#000000"),
+                    w = target.width,
+                    h = target.height,
+                ));
+            }
+        }
     }
     let mut next_input_index = request.clips.len();
 
@@ -123,12 +187,21 @@ fn build_ffmpeg_args(request: &ExportRequest) -> (Vec<String>, f64) {
                     }
                 })
             };
+            let text_overlay = match &c.source {
+                ClipSource::TextCard { font_color, .. } => text_card_paths.get(&c.id).map(|path| TextOverlaySpec {
+                    fontfile_path: font_path.to_string(),
+                    textfile_path: path.to_string_lossy().to_string(),
+                    font_color: sanitize_hex_color(font_color, "#FFFFFF"),
+                }),
+                _ => None,
+            };
             GraphClip {
                 input_index: i,
                 trim_in_sec: c.trim_in_sec,
                 trim_out_sec: c.trim_out_sec,
                 audio_replacement,
                 has_audio: c.has_audio,
+                text_overlay,
             }
         })
         .collect();
@@ -202,20 +275,39 @@ pub async fn export_project(
     }
     state.cancelled.store(false, Ordering::SeqCst);
 
-    let (mut args, total_duration_sec) = build_ffmpeg_args(&request);
+    let font_path = app
+        .path()
+        .resolve("resources/NotoSans-Regular.ttf", BaseDirectory::Resource)
+        .map_err(|e| format!("failed to resolve bundled font: {e}"))?;
+    let text_card_paths = write_text_card_files(&request.clips)?;
+    let cleanup_text_cards = || {
+        for path in text_card_paths.values() {
+            let _ = std::fs::remove_file(path);
+        }
+    };
+
+    let (mut args, total_duration_sec) =
+        build_ffmpeg_args(&request, &text_card_paths, &font_path.to_string_lossy());
     args.push("-progress".into());
     args.push("pipe:1".into());
     args.push("-nostats".into());
     args.push(request.output_path.clone());
 
     let shell = app.shell();
-    let sidecar = shell
-        .sidecar("ffmpeg")
-        .map_err(|e| format!("failed to resolve ffmpeg sidecar: {e}"))?;
-    let (mut rx, child) = sidecar
-        .args(args)
-        .spawn()
-        .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+    let sidecar = match shell.sidecar("ffmpeg") {
+        Ok(s) => s,
+        Err(e) => {
+            cleanup_text_cards();
+            return Err(format!("failed to resolve ffmpeg sidecar: {e}"));
+        }
+    };
+    let (mut rx, child) = match sidecar.args(args).spawn() {
+        Ok(v) => v,
+        Err(e) => {
+            cleanup_text_cards();
+            return Err(format!("failed to spawn ffmpeg: {e}"));
+        }
+    };
     *state.child.lock().unwrap() = Some(child);
 
     let mut parser = ProgressParser::new(total_duration_sec);
@@ -242,6 +334,7 @@ pub async fn export_project(
         }
     }
     *state.child.lock().unwrap() = None;
+    cleanup_text_cards();
 
     if !success {
         if state.cancelled.swap(false, Ordering::SeqCst) {
@@ -268,17 +361,48 @@ pub async fn export_project(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AudioMode, AudioOverride};
+    use crate::model::{AudioMode, AudioOverride, ClipSource};
 
     fn clip(id: &str, source_path: &str, has_audio: bool, audio_override: Option<AudioOverride>) -> Clip {
         Clip {
             id: id.into(),
+            source: ClipSource::Video,
             source_path: source_path.into(),
             source_duration_sec: 5.0,
             trim_in_sec: 0.0,
             trim_out_sec: 3.0,
             has_audio,
             audio_override,
+        }
+    }
+
+    fn image_clip(id: &str, source_path: &str, duration_sec: f64) -> Clip {
+        Clip {
+            id: id.into(),
+            source: ClipSource::Image,
+            source_path: source_path.into(),
+            source_duration_sec: duration_sec,
+            trim_in_sec: 0.0,
+            trim_out_sec: duration_sec,
+            has_audio: false,
+            audio_override: None,
+        }
+    }
+
+    fn text_card_clip(id: &str, text: &str, bg: &str, fg: &str, duration_sec: f64) -> Clip {
+        Clip {
+            id: id.into(),
+            source: ClipSource::TextCard {
+                text: text.into(),
+                background_color: bg.into(),
+                font_color: fg.into(),
+            },
+            source_path: String::new(),
+            source_duration_sec: duration_sec,
+            trim_in_sec: 0.0,
+            trim_out_sec: duration_sec,
+            has_audio: false,
+            audio_override: None,
         }
     }
 
@@ -313,7 +437,7 @@ mod tests {
             fade_in_sec: 0.5,
             fade_out_sec: 0.5,
         };
-        let (args, _total) = build_ffmpeg_args(&request(clips, Some(movie_audio)));
+        let (args, _total) = build_ffmpeg_args(&request(clips, Some(movie_audio)), &HashMap::new(), "/fake/font.ttf");
 
         let inputs: Vec<&str> = args
             .windows(2)
@@ -351,7 +475,7 @@ mod tests {
             fade_in_sec: 0.0,
             fade_out_sec: 0.0,
         };
-        let (args, _total) = build_ffmpeg_args(&request(clips, Some(movie_audio)));
+        let (args, _total) = build_ffmpeg_args(&request(clips, Some(movie_audio)), &HashMap::new(), "/fake/font.ttf");
 
         // override0.mp3 must never be added as an input - Replace mode makes
         // the per-clip override moot, so it shouldn't even reach ffmpeg.
@@ -371,21 +495,73 @@ mod tests {
         assert!(!filter_complex.contains("amix")); // Replace, not Mix
     }
 
+    #[test]
+    fn mixed_timeline_video_image_textcard_indexes_one_input_per_clip() {
+        // clip0 = video (index 0), clip1 = image (index 1, -loop 1), clip2 =
+        // text card (index 2, -f lavfi color=). No per-clip overrides or
+        // movie audio here, so the input list must be exactly these three,
+        // one -i group per clip, in declaration order.
+        let clips = vec![
+            clip("c0", "clip0.mp4", true, None),
+            image_clip("c1", "photo.jpg", 2.5),
+            text_card_clip("c2", "Kapitel 1", "#000000", "#FFFFFF", 3.0),
+        ];
+        let mut text_card_paths = HashMap::new();
+        text_card_paths.insert("c2".to_string(), PathBuf::from("/tmp/videoclipper_textcard_c2.txt"));
+
+        let (args, _total) =
+            build_ffmpeg_args(&request(clips, None), &text_card_paths, "/opt/videoclipper/NotoSans-Regular.ttf");
+
+        // One -i per clip, in declaration order: clip0's real file, then
+        // photo.jpg (preceded by -loop 1), then clip2's generated lavfi
+        // color= source (preceded by -f lavfi) standing in for a file.
+        let inputs: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "-i")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs[0], "clip0.mp4");
+        assert_eq!(inputs[1], "photo.jpg");
+        assert!(inputs[2].starts_with("color=c=#000000:s="));
+        assert!(args.windows(3).any(|w| w == ["-loop", "1", "-i"]));
+        assert!(args.windows(2).any(|w| w == ["-f", "lavfi"]));
+
+        // clip2 (text card) is input index 2 - its own drawtext must
+        // reference [2:v], and no other clip should have drawtext at all.
+        let filter_complex = args
+            .iter()
+            .position(|a| a == "-filter_complex")
+            .map(|i| args[i + 1].as_str())
+            .unwrap();
+        assert!(filter_complex.contains("[2:v]trim=start=0:end=3,setpts=PTS-STARTPTS,drawtext="));
+        assert!(filter_complex.contains("textfile='/tmp/videoclipper_textcard_c2.txt'"));
+        assert!(filter_complex.contains("fontfile='/opt/videoclipper/NotoSans-Regular.ttf'"));
+        assert!(filter_complex.contains("fontcolor=#FFFFFF"));
+        assert_eq!(filter_complex.matches("drawtext=").count(), 1);
+    }
+
     /// End-to-end sanity check against the real vendored ffmpeg binary:
     /// generates tiny synthetic clips/audio with distinct tones, builds the
     /// exact production args for a per-clip-override + movie-audio-mix
     /// scenario, and confirms ffmpeg actually accepts and runs the graph.
-    /// Ignored by default (needs the vendored sidecar binaries); run with
-    /// `cargo test -- --ignored real_ffmpeg`.
+    /// Also covers M10's image/text-card clips in the same timeline, since
+    /// that's exactly the kind of interaction (shared input-index
+    /// bookkeeping, drawtext alongside per-clip audio replacement) unit
+    /// tests can assert the *shape* of but not that ffmpeg actually accepts
+    /// it. Ignored by default (needs the vendored sidecar binaries + bundled
+    /// font); run with `cargo test -- --ignored real_ffmpeg`.
     #[test]
     #[ignore]
-    fn real_ffmpeg_accepts_per_clip_override_plus_movie_audio_mix_graph() {
-        let dir = std::env::temp_dir().join("videoclipper_m6_verify");
+    fn real_ffmpeg_accepts_mixed_video_image_textcard_with_overrides_and_movie_audio() {
+        let dir = std::env::temp_dir().join("videoclipper_m6_m10_verify");
         let _ = std::fs::create_dir_all(&dir);
         let ffmpeg = std::env::current_dir()
             .unwrap()
             .join("binaries/ffmpeg-x86_64-unknown-linux-gnu");
         assert!(ffmpeg.exists(), "run scripts/fetch-ffmpeg.sh linux first");
+        let font = std::env::current_dir().unwrap().join("resources/NotoSans-Regular.ttf");
+        assert!(font.exists(), "expected bundled font at src-tauri/resources/NotoSans-Regular.ttf");
 
         let gen = |name: &str, tone_hz: u32, out: &std::path::Path| {
             let status = std::process::Command::new(&ffmpeg)
@@ -409,12 +585,18 @@ mod tests {
 
         let clip0 = dir.join("clip0.mp4");
         let clip1 = dir.join("clip1.mp4");
+        let photo = dir.join("photo.jpg");
         let override0 = dir.join("override0.mp3");
         let music = dir.join("music.mp3");
         let out = dir.join("out.mp4");
 
         gen("clip0", 440, &clip0);
         gen("clip1", 220, &clip1);
+        let status = std::process::Command::new(&ffmpeg)
+            .args(["-y", "-f", "lavfi", "-i", "testsrc=size=320x240", "-frames:v", "1", photo.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to generate photo.jpg");
         let status = std::process::Command::new(&ffmpeg)
             .args(["-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=1", override0.to_str().unwrap()])
             .status()
@@ -434,6 +616,8 @@ mod tests {
                 Some(AudioOverride { source_path: override0.to_str().unwrap().into(), mode: AudioMode::Loop, gain_db: -3.0 }),
             ),
             clip("c1", clip1.to_str().unwrap(), true, None),
+            image_clip("c2", photo.to_str().unwrap(), 1.5),
+            text_card_clip("c3", "Slut", "#000000", "#FFFFFF", 1.5),
         ];
         let movie_audio = MovieAudioOverride {
             source_path: music.to_str().unwrap().into(),
@@ -445,11 +629,15 @@ mod tests {
         };
         let mut req = request(clips, Some(movie_audio));
         req.output_path = out.to_str().unwrap().into();
-        let (mut args, _total) = build_ffmpeg_args(&req);
+        let text_card_paths = write_text_card_files(&req.clips).unwrap();
+        let (mut args, _total) = build_ffmpeg_args(&req, &text_card_paths, &font.to_string_lossy());
         args.push("-nostats".into());
         args.push(req.output_path.clone());
 
         let output = std::process::Command::new(&ffmpeg).args(&args).output().unwrap();
+        for path in text_card_paths.values() {
+            let _ = std::fs::remove_file(path);
+        }
         assert!(
             output.status.success(),
             "ffmpeg failed:\n{}",

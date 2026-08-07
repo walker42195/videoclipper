@@ -99,6 +99,22 @@ pub struct AudioReplacement {
     pub gain_db: f64,
 }
 
+/// A text card's `drawtext` inputs: both the text and font are read from
+/// files (`textfile=`/`fontfile=`) rather than embedded inline in the filter
+/// string, specifically to sidestep ffmpeg filtergraph string escaping for
+/// arbitrary user text (a stray `'`, `:`, or `,` in a title would otherwise
+/// break the whole graph) - see [`escape_filtergraph_path`] for why even the
+/// file *paths* need escaping of their own (Windows drive-letter colons).
+#[derive(Debug, Clone)]
+pub struct TextOverlaySpec {
+    pub fontfile_path: String,
+    pub textfile_path: String,
+    /// `#RRGGBB`, expected pre-validated by the caller (see
+    /// `sanitize_hex_color` in commands::export) - this module doesn't
+    /// re-validate since it has no opinion on where the value came from.
+    pub font_color: String,
+}
+
 /// One normalized input clip going into a graph.
 #[derive(Debug, Clone)]
 pub struct GraphClip {
@@ -109,6 +125,10 @@ pub struct GraphClip {
     /// its own. Takes priority over `has_audio`.
     pub audio_replacement: Option<AudioReplacement>,
     pub has_audio: bool,
+    /// If Some, a `drawtext` layer is composited onto this clip's video
+    /// (used for text cards, whose "video" is otherwise just a generated
+    /// solid-color background at `input_index`).
+    pub text_overlay: Option<TextOverlaySpec>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -119,14 +139,37 @@ pub struct NormalizeTarget {
     pub sample_rate: u32,
 }
 
+/// Escapes a filesystem path for safe embedding inside a single-quoted
+/// ffmpeg filtergraph option value (e.g. drawtext's `textfile=`/`fontfile=`).
+/// Backslash path separators are normalized to forward slashes first (ffmpeg
+/// accepts `/` in paths on Windows too), then the filtergraph metacharacters
+/// that can still appear in a path - `:` (a Windows drive letter) and `'`
+/// (closing the quoted value early) - are backslash-escaped. Without this, a
+/// Windows temp path like `C:\Users\...\Temp\text.txt` breaks filter parsing
+/// on the drive-letter colon alone.
+pub fn escape_filtergraph_path(path: &str) -> String {
+    path.replace('\\', "/").replace(':', "\\:").replace('\'', "\\'")
+}
+
 fn normalize_video_chain(clip: &GraphClip, target: NormalizeTarget, label: &str) -> String {
+    let drawtext = match &clip.text_overlay {
+        Some(overlay) => format!(
+            "drawtext=fontfile='{fontfile}':textfile='{textfile}':fontcolor={color}:\
+             fontsize=h/12:line_spacing=8:x=(w-text_w)/2:y=(h-text_h)/2,",
+            fontfile = escape_filtergraph_path(&overlay.fontfile_path),
+            textfile = escape_filtergraph_path(&overlay.textfile_path),
+            color = overlay.font_color,
+        ),
+        None => String::new(),
+    };
     format!(
-        "[{i}:v]trim=start={in_}:end={out},setpts=PTS-STARTPTS,\
+        "[{i}:v]trim=start={in_}:end={out},setpts=PTS-STARTPTS,{drawtext}\
          scale={w}:{h}:force_original_aspect_ratio=decrease,\
          pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p,settb=AVTB[{label}];\n",
         i = clip.input_index,
         in_ = clip.trim_in_sec,
         out = clip.trim_out_sec,
+        drawtext = drawtext,
         w = target.width,
         h = target.height,
         fps = target.fps,
@@ -469,6 +512,7 @@ mod tests {
             trim_out_sec: 5.0,
             audio_replacement: None,
             has_audio: true,
+            text_overlay: None,
         }];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let (graph, maps) = build_concat_graph(&clips, target);
@@ -480,8 +524,8 @@ mod tests {
     #[test]
     fn concat_graph_multi_clip_uses_concat_filter() {
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true },
-            GraphClip { input_index: 1, trim_in_sec: 1.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: true },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true, text_overlay: None },
+            GraphClip { input_index: 1, trim_in_sec: 1.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: true, text_overlay: None },
         ];
         let target = NormalizeTarget { width: 1280, height: 720, fps: 24, sample_rate: 44100 };
         let (graph, maps) = build_concat_graph(&clips, target);
@@ -492,8 +536,8 @@ mod tests {
     #[test]
     fn concat_graph_no_audio_omits_audio_map() {
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: false },
-            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 3.0, audio_replacement: None, has_audio: false },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: false, text_overlay: None },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 3.0, audio_replacement: None, has_audio: false, text_overlay: None },
         ];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let (graph, maps) = build_concat_graph(&clips, target);
@@ -507,8 +551,8 @@ mod tests {
         // track must still be included (not dropped entirely), with clip 1
         // getting a silent stand-in of its own duration.
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true },
-            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 3.0, audio_replacement: None, has_audio: false },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true, text_overlay: None },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 3.0, audio_replacement: None, has_audio: false, text_overlay: None },
         ];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let (graph, maps) = build_concat_graph(&clips, target);
@@ -526,6 +570,7 @@ mod tests {
             trim_out_sec: 5.0,
             audio_replacement: Some(AudioReplacement { input_index: 4, fill_mode: AudioMode::Loop, gain_db: -3.0 }),
             has_audio: true, // replacement takes priority over the clip's own audio
+            text_overlay: None,
         }];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let (graph, _maps) = build_concat_graph(&clips, target);
@@ -542,6 +587,7 @@ mod tests {
             trim_out_sec: 5.0,
             audio_replacement: Some(AudioReplacement { input_index: 4, fill_mode: AudioMode::Pad, gain_db: 0.0 }),
             has_audio: false,
+            text_overlay: None,
         }];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let (graph, _maps) = build_concat_graph(&clips, target);
@@ -558,6 +604,7 @@ mod tests {
             trim_out_sec: 5.0,
             audio_replacement: None,
             has_audio: true,
+            text_overlay: None,
         }];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let (graph, maps, total) = build_transition_graph(&clips, target, &[]);
@@ -571,9 +618,9 @@ mod tests {
         // Matches the plan's worked example: 5s/4s/6s clips, fade 1s at
         // 0->1, dissolve 0.75s at 1->2.
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true },
-            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: true },
-            GraphClip { input_index: 2, trim_in_sec: 0.0, trim_out_sec: 6.0, audio_replacement: None, has_audio: true },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true, text_overlay: None },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: true, text_overlay: None },
+            GraphClip { input_index: 2, trim_in_sec: 0.0, trim_out_sec: 6.0, audio_replacement: None, has_audio: true, text_overlay: None },
         ];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let transitions = [
@@ -595,8 +642,8 @@ mod tests {
     #[test]
     fn transition_graph_no_audio_omits_acrossfade_and_audio_map() {
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: false },
-            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: false },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: false, text_overlay: None },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: false, text_overlay: None },
         ];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let transitions = [TransitionJunction { transition_type: TransitionType::Wipeleft, duration_sec: 1.0 }];
@@ -611,8 +658,8 @@ mod tests {
     #[should_panic(expected = "need exactly one fewer transition than clips")]
     fn transition_graph_rejects_mismatched_transition_count() {
         let clips = vec![
-            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true },
-            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: true },
+            GraphClip { input_index: 0, trim_in_sec: 0.0, trim_out_sec: 5.0, audio_replacement: None, has_audio: true, text_overlay: None },
+            GraphClip { input_index: 1, trim_in_sec: 0.0, trim_out_sec: 4.0, audio_replacement: None, has_audio: true, text_overlay: None },
         ];
         let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
         let _ = build_transition_graph(&clips, target, &[]);
@@ -677,5 +724,62 @@ mod tests {
         // elsewhere (UI should cap duration pickers to min(d0, d1) directly).
         let clamped = clamp_transitions(&durations, &transitions);
         approx(clamped[0].transition_duration_sec, 10.0);
+    }
+
+    #[test]
+    fn escape_filtergraph_path_handles_windows_drive_letters_and_separators() {
+        assert_eq!(
+            escape_filtergraph_path(r"C:\Users\fredrik\AppData\Local\Temp\vc_text_abc.txt"),
+            r"C\:/Users/fredrik/AppData/Local/Temp/vc_text_abc.txt",
+        );
+    }
+
+    #[test]
+    fn escape_filtergraph_path_escapes_single_quotes() {
+        assert_eq!(escape_filtergraph_path("/tmp/it's a file.txt"), r"/tmp/it\'s a file.txt");
+    }
+
+    #[test]
+    fn escape_filtergraph_path_leaves_plain_unix_paths_untouched() {
+        assert_eq!(escape_filtergraph_path("/tmp/videoclipper/text_1.txt"), "/tmp/videoclipper/text_1.txt");
+    }
+
+    #[test]
+    fn video_chain_injects_drawtext_before_scale_for_text_cards() {
+        let clip = GraphClip {
+            input_index: 2,
+            trim_in_sec: 0.0,
+            trim_out_sec: 3.0,
+            audio_replacement: None,
+            has_audio: false,
+            text_overlay: Some(TextOverlaySpec {
+                fontfile_path: "/opt/videoclipper/NotoSans-Regular.ttf".into(),
+                textfile_path: "/tmp/videoclipper_textcard_abc.txt".into(),
+                font_color: "#FFFFFF".into(),
+            }),
+        };
+        let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
+        let chain = normalize_video_chain(&clip, target, "v0");
+        assert!(chain.starts_with("[2:v]trim=start=0:end=3,setpts=PTS-STARTPTS,drawtext="));
+        assert!(chain.contains("fontfile='/opt/videoclipper/NotoSans-Regular.ttf'"));
+        assert!(chain.contains("textfile='/tmp/videoclipper_textcard_abc.txt'"));
+        assert!(chain.contains("fontcolor=#FFFFFF"));
+        // drawtext must run before scale/pad, not after.
+        assert!(chain.find("drawtext=").unwrap() < chain.find("scale=").unwrap());
+    }
+
+    #[test]
+    fn video_chain_omits_drawtext_for_ordinary_clips() {
+        let clip = GraphClip {
+            input_index: 0,
+            trim_in_sec: 1.0,
+            trim_out_sec: 5.0,
+            audio_replacement: None,
+            has_audio: true,
+            text_overlay: None,
+        };
+        let target = NormalizeTarget { width: 1920, height: 1080, fps: 30, sample_rate: 48000 };
+        let chain = normalize_video_chain(&clip, target, "v0");
+        assert!(!chain.contains("drawtext"));
     }
 }
