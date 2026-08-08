@@ -204,6 +204,15 @@ export interface Transition {
   durationSec: number;
 }
 
+/** A transition at the very start/end of the whole timeline, against a
+ * synthesized black clip rather than a second real clip - mirrors Rust's
+ * EdgeTransition. Unlike Transition, needs no fromClipId/toClipId since
+ * there's only ever one "other side": the timeline's own edge. */
+export interface EdgeTransition {
+  type: TransitionType;
+  durationSec: number;
+}
+
 export type AudioBlendMode = "Replace" | "Mix";
 
 export const AUDIO_BLEND_MODE_LABELS: Record<AudioBlendMode, string> = {
@@ -312,14 +321,9 @@ export interface Project {
   transitions: Transition[];
   movieAudioOverride: MovieAudioOverride | null;
   exportSettings: ExportSettings;
-  /** Fade-to-black at the very start/end of the whole timeline - distinct
-   * from Transition, which needs two adjacent clips to crossfade between.
-   * 0 disables. */
-  introFadeSec: number;
-  outroFadeSec: number;
+  introTransition: EdgeTransition | null;
+  outroTransition: EdgeTransition | null;
 }
-
-export const MAX_EDGE_FADE_SEC = 5;
 
 export interface ClipMeta {
   durationSec: number;

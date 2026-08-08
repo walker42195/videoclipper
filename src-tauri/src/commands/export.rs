@@ -1,11 +1,11 @@
 use crate::ffmpeg::filtergraph::{
-    build_background_music_chain, build_edge_fade_chain, build_transition_graph, AudioReplacement,
-    BackgroundMusicSpec, GraphClip, NormalizeTarget, TextOverlaySpec, TransitionJunction,
-    CUT_DURATION_SEC,
+    build_background_music_chain, build_transition_graph, AudioReplacement, BackgroundMusicSpec,
+    GraphClip, NormalizeTarget, TextOverlaySpec, TransitionJunction, CUT_DURATION_SEC,
 };
 use crate::ffmpeg::progress::ProgressParser;
 use crate::model::{
-    AudioBlendMode, Clip, ClipSource, ExportSettings, MovieAudioOverride, Transition, TransitionType,
+    AudioBlendMode, Clip, ClipSource, EdgeTransition, ExportSettings, MovieAudioOverride, Transition,
+    TransitionType,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -70,11 +70,10 @@ pub struct ExportRequest {
     /// as a hard cut (see [`CUT_DURATION_SEC`]).
     pub transitions: Vec<Transition>,
     pub movie_audio_override: Option<MovieAudioOverride>,
-    /// Fade-to-black at the very start/end of the whole timeline. 0 disables.
     #[serde(default)]
-    pub intro_fade_sec: f64,
+    pub intro_transition: Option<EdgeTransition>,
     #[serde(default)]
-    pub outro_fade_sec: f64,
+    pub outro_transition: Option<EdgeTransition>,
     pub export_settings: ExportSettings,
     pub output_path: String,
 }
@@ -173,7 +172,7 @@ fn build_ffmpeg_args(
         Some(AudioBlendMode::Replace)
     );
 
-    let graph_clips: Vec<GraphClip> = request
+    let mut graph_clips: Vec<GraphClip> = request
         .clips
         .iter()
         .enumerate()
@@ -212,15 +211,68 @@ fn build_ffmpeg_args(
         })
         .collect();
 
-    let junctions = resolve_junctions(&request.clips, &request.transitions);
+    let mut junctions = resolve_junctions(&request.clips, &request.transitions);
+
+    // Intro/outro edge transitions are folded straight into the same
+    // xfade/acrossfade chain every clip-to-clip transition uses, against a
+    // synthesized black clip standing in for "the frame before clip 1" or
+    // "the frame after the last clip" - the same trick TextCard already uses
+    // for a generated input. This gives edge transitions the full 58-type
+    // catalog for free, rather than needing a separate fade-only code path.
+    // No `d=` (duration) on the color source: like the `-loop 1` image
+    // pattern, the source is left effectively infinite and
+    // normalize_video_chain's trim=end=<duration> caps it - an explicit d=
+    // here risks landing a frame short of the requested duration after fps
+    // rounding, which would starve xfade of frames right at the tail.
+    if let Some(intro) = &request.intro_transition {
+        let idx = next_input_index;
+        next_input_index += 1;
+        args.push("-f".into());
+        args.push("lavfi".into());
+        args.push("-i".into());
+        args.push(format!("color=c=black:s={}x{}", target.width, target.height));
+        graph_clips.insert(
+            0,
+            GraphClip {
+                input_index: idx,
+                trim_in_sec: 0.0,
+                trim_out_sec: intro.duration_sec.max(CUT_DURATION_SEC),
+                audio_replacement: None,
+                has_audio: false,
+                text_overlay: None,
+            },
+        );
+        junctions.insert(
+            0,
+            TransitionJunction {
+                transition_type: intro.transition_type,
+                duration_sec: intro.duration_sec.max(CUT_DURATION_SEC),
+            },
+        );
+    }
+    if let Some(outro) = &request.outro_transition {
+        let idx = next_input_index;
+        next_input_index += 1;
+        args.push("-f".into());
+        args.push("lavfi".into());
+        args.push("-i".into());
+        args.push(format!("color=c=black:s={}x{}", target.width, target.height));
+        graph_clips.push(GraphClip {
+            input_index: idx,
+            trim_in_sec: 0.0,
+            trim_out_sec: outro.duration_sec.max(CUT_DURATION_SEC),
+            audio_replacement: None,
+            has_audio: false,
+            text_overlay: None,
+        });
+        junctions.push(TransitionJunction {
+            transition_type: outro.transition_type,
+            duration_sec: outro.duration_sec.max(CUT_DURATION_SEC),
+        });
+    }
+
     let (mut filter_complex, mut maps, total_duration_sec) =
         build_transition_graph(&graph_clips, target, &junctions);
-
-    // Tracks whichever label currently holds the timeline's final audio (if
-    // any), so the edge-fade step below doesn't need to know whether it came
-    // from the plain transition graph or got replaced by background music.
-    let mut current_audio_label: Option<String> =
-        maps.iter().any(|m| m == "[aout]").then(|| "aout".to_string());
 
     if let Some(movie_audio) = &request.movie_audio_override {
         let music_input_index = next_input_index;
@@ -251,28 +303,6 @@ fn build_ffmpeg_args(
         ));
         maps.push("-map".into());
         maps.push("[finalaudio]".into());
-        current_audio_label = Some("finalaudio".to_string());
-    }
-
-    if request.intro_fade_sec > 0.0 || request.outro_fade_sec > 0.0 {
-        filter_complex.push_str(&build_edge_fade_chain(
-            "vout",
-            current_audio_label.as_deref(),
-            request.intro_fade_sec,
-            request.outro_fade_sec,
-            total_duration_sec,
-            "voutfaded",
-            "aoutfaded",
-        ));
-        for m in maps.iter_mut() {
-            if m == "[vout]" {
-                *m = "[voutfaded]".into();
-            } else if let Some(label) = &current_audio_label {
-                if *m == format!("[{label}]") {
-                    *m = "[aoutfaded]".into();
-                }
-            }
-        }
     }
 
     args.push("-filter_complex".into());
@@ -415,28 +445,32 @@ pub struct PreviewRequest {
     pub transitions: Vec<Transition>,
     pub movie_audio_override: Option<MovieAudioOverride>,
     #[serde(default)]
-    pub intro_fade_sec: f64,
+    pub intro_transition: Option<EdgeTransition>,
     #[serde(default)]
-    pub outro_fade_sec: f64,
+    pub outro_transition: Option<EdgeTransition>,
 }
 
 const PREVIEW_FILE_PREFIX: &str = "videoclipper_preview_";
 
-/// Renders the whole timeline (clips + transitions + edge fades + movie
-/// audio) at a small/fast preset to a file in the app's cache dir, so the
-/// user can watch the actual composited result - including transitions -
+/// Renders the whole timeline (clips + transitions + edge transitions +
+/// movie audio) at a small/fast preset to a file in the app's cache dir, so
+/// the user can watch the actual composited result - including transitions -
 /// before committing to a full-quality export. This is the "Rendera
 /// förhandsvisning" fallback the original plan scoped v1's preview down to,
 /// rather than a real-time in-browser compositor.
 ///
 /// The cache dir (not a bare temp dir) matters: the frontend reads the
-/// result back via the fs plugin, whose capability scope is `$HOME/**/*` -
-/// `std::env::temp_dir()` (`/tmp` on Linux) falls outside that scope, while
-/// the app's cache dir lives under the user's home on every platform Tauri
-/// supports. Each render gets a fresh unique filename (old ones are swept
-/// first) rather than a fixed name, so a second preview after an edit is
-/// guaranteed to be read back fresh instead of the frontend's blob-URL cache
-/// reusing the previous render for an unchanged path.
+/// result back via the fs plugin. `std::env::temp_dir()` (`/tmp` on Linux)
+/// falls outside every capability scope this app declares, while the app's
+/// cache dir has its own explicit `$APPCACHE/**/*` entry (needed because
+/// `tauri-plugin-fs`'s `read_file` defaults `require_literal_leading_dot` to
+/// `true` on Unix, unlike core's own fs scope - the broader `$HOME/**/*`
+/// entry does NOT match a dot-prefixed path segment like `.cache` there,
+/// confirmed empirically, not just from docs). Each render gets a fresh
+/// unique filename (old ones are swept first) rather than a fixed name, so a
+/// second preview after an edit is guaranteed to be read back fresh instead
+/// of the frontend's blob-URL cache reusing the previous render for an
+/// unchanged path.
 #[tauri::command]
 pub async fn render_preview(
     app: AppHandle,
@@ -466,8 +500,8 @@ pub async fn render_preview(
         clips: request.clips,
         transitions: request.transitions,
         movie_audio_override: request.movie_audio_override,
-        intro_fade_sec: request.intro_fade_sec,
-        outro_fade_sec: request.outro_fade_sec,
+        intro_transition: request.intro_transition,
+        outro_transition: request.outro_transition,
         export_settings: ExportSettings {
             preset: "preview".into(),
             container: "mp4".into(),
@@ -539,8 +573,8 @@ mod tests {
             clips,
             transitions: vec![],
             movie_audio_override,
-            intro_fade_sec: 0.0,
-            outro_fade_sec: 0.0,
+            intro_transition: None,
+            outro_transition: None,
             export_settings: ExportSettings::default(),
             output_path: "out.mp4".into(),
         }
@@ -672,64 +706,72 @@ mod tests {
     }
 
     #[test]
-    fn edge_fades_remap_final_video_and_audio_labels() {
+    fn intro_transition_prepends_black_clip_wired_with_the_chosen_xfade_type() {
         let mut req = request(
             vec![clip("c0", "clip0.mp4", true, None), clip("c1", "clip1.mp4", true, None)],
             None,
         );
-        req.intro_fade_sec = 1.0;
-        req.outro_fade_sec = 1.0;
-        let (args, _total) = build_ffmpeg_args(&req, &HashMap::new(), "/fake/font.ttf");
+        req.intro_transition = Some(EdgeTransition { transition_type: TransitionType::Wipeleft, duration_sec: 1.0 });
+        let (args, total_with_intro) = build_ffmpeg_args(&req, &HashMap::new(), "/fake/font.ttf");
+
+        // An extra generated black-color input, with no explicit `d=` (left
+        // infinite, capped by the normalize chain's own trim= like -loop 1
+        // images are) - not counted among the two real clip inputs.
+        let inputs: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "-i")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(inputs.len(), 3);
+        assert!(inputs[2].starts_with("color=c=black:s="));
+        assert!(!inputs[2].contains(":d="));
 
         let filter_complex = args
             .iter()
             .position(|a| a == "-filter_complex")
             .map(|i| args[i + 1].as_str())
             .unwrap();
-        assert!(filter_complex.contains("[vout]fade=t=in:st=0:d=1,fade=t=out"));
-        assert!(filter_complex.contains("[aout]afade=t=in:d=1,afade=t=out"));
+        // Black clip becomes v0 (input index 2, pushed last but positioned
+        // first in the graph), real clip0 becomes v1: the chosen type must
+        // wire the boundary junction, not just fall back to a plain fade.
+        assert!(filter_complex.contains("[v0][v1]xfade=transition=wipeleft"));
 
-        let map_args: Vec<&str> = args
-            .windows(2)
-            .filter(|w| w[0] == "-map")
-            .map(|w| w[1].as_str())
-            .collect();
-        assert_eq!(map_args, vec!["[voutfaded]", "[aoutfaded]"]);
-    }
-
-    #[test]
-    fn edge_fades_with_movie_audio_remap_finalaudio_not_aout() {
-        let mut req = request(
-            vec![clip("c0", "clip0.mp4", true, None)],
-            Some(MovieAudioOverride {
-                source_path: "music.mp3".into(),
-                blend_mode: AudioBlendMode::Mix,
-                fill_mode: AudioMode::Loop,
-                gain_db: -18.0,
-                fade_in_sec: 0.0,
-                fade_out_sec: 0.0,
-            }),
+        // Duration is unaffected by the intro - it overlays into clip0's
+        // own runtime rather than adding time, same invariant as the old
+        // fade-only implementation had.
+        let req_no_intro = request(
+            vec![clip("c0", "clip0.mp4", true, None), clip("c1", "clip1.mp4", true, None)],
+            None,
         );
-        req.intro_fade_sec = 0.5;
+        let (_args, total_without_intro) = build_ffmpeg_args(&req_no_intro, &HashMap::new(), "/fake/font.ttf");
+        assert!((total_with_intro - total_without_intro).abs() < 1e-9);
+    }
+
+    #[test]
+    fn outro_transition_appends_black_clip_wired_with_the_chosen_xfade_type() {
+        let mut req = request(vec![clip("c0", "clip0.mp4", true, None)], None);
+        req.outro_transition = Some(EdgeTransition { transition_type: TransitionType::Slideup, duration_sec: 0.8 });
         let (args, _total) = build_ffmpeg_args(&req, &HashMap::new(), "/fake/font.ttf");
+
+        let inputs: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "-i")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(inputs.len(), 2);
+        assert!(inputs[1].starts_with("color=c=black:s="));
 
         let filter_complex = args
             .iter()
             .position(|a| a == "-filter_complex")
             .map(|i| args[i + 1].as_str())
             .unwrap();
-        assert!(filter_complex.contains("[finalaudio]afade=t=in:d=0.5[aoutfaded]"));
-
-        let map_args: Vec<&str> = args
-            .windows(2)
-            .filter(|w| w[0] == "-map")
-            .map(|w| w[1].as_str())
-            .collect();
-        assert_eq!(map_args, vec!["[voutfaded]", "[aoutfaded]"]);
+        // Real clip0 is v0, the appended black clip is v1.
+        assert!(filter_complex.contains("[v0][v1]xfade=transition=slideup"));
     }
 
     #[test]
-    fn no_edge_fades_leaves_maps_untouched() {
+    fn no_edge_transitions_leaves_maps_as_plain_vout_aout() {
         let req = request(vec![clip("c0", "clip0.mp4", true, None)], None);
         let (args, _total) = build_ffmpeg_args(&req, &HashMap::new(), "/fake/font.ttf");
         let map_args: Vec<&str> = args
@@ -846,17 +888,18 @@ mod tests {
         assert!(std::fs::metadata(&out).unwrap().len() > 0);
     }
 
-    /// End-to-end sanity check for intro/outro edge fades against the real
-    /// vendored ffmpeg binary: confirms (a) the fades don't change the
-    /// output's total duration (they're overlaid on the existing timeline,
-    /// not inserted as extra time) and (b) frames actually go near-black
-    /// during the fade windows but not in the middle of the timeline - a
-    /// pure filtergraph-string test can assert the `fade=` filter text is
-    /// present but not that ffmpeg actually renders black pixels from it.
-    /// Ignored by default; run with `cargo test -- --ignored real_ffmpeg`.
+    /// End-to-end sanity check for intro/outro edge transitions against the
+    /// real vendored ffmpeg binary: confirms (a) they don't change the
+    /// output's total duration (the synthetic black clip is consumed
+    /// entirely by the crossfade rather than adding time) and (b) frames
+    /// actually go near-black during the transition windows but not in the
+    /// middle of the timeline - a pure filtergraph-string test can assert
+    /// the `xfade=` filter text is present but not that ffmpeg actually
+    /// renders black pixels from it. Ignored by default; run with
+    /// `cargo test -- --ignored real_ffmpeg`.
     #[test]
     #[ignore]
-    fn real_ffmpeg_edge_fades_produce_near_black_frames_without_changing_duration() {
+    fn real_ffmpeg_edge_transitions_produce_near_black_frames_without_changing_duration() {
         let dir = std::env::temp_dir().join("videoclipper_edge_fade_verify");
         let _ = std::fs::create_dir_all(&dir);
         let ffmpeg = std::env::current_dir().unwrap().join("binaries/ffmpeg-x86_64-unknown-linux-gnu");
@@ -887,8 +930,11 @@ mod tests {
             clip("c1", clip1.to_str().unwrap(), true, None),
         ];
         let mut req = request(clips, None);
-        req.intro_fade_sec = 0.5;
-        req.outro_fade_sec = 0.5;
+        // Kept on the plain `Fade` type (rather than e.g. a wipe) so the
+        // near-black brightness assertions below stay valid - a non-fade
+        // type wouldn't necessarily be uniformly dark at any given instant.
+        req.intro_transition = Some(EdgeTransition { transition_type: TransitionType::Fade, duration_sec: 0.5 });
+        req.outro_transition = Some(EdgeTransition { transition_type: TransitionType::Fade, duration_sec: 0.5 });
         req.output_path = out.to_str().unwrap().into();
 
         let (mut args, total_duration_sec) = build_ffmpeg_args(&req, &HashMap::new(), "/fake/font.ttf");

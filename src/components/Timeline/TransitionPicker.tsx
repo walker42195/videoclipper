@@ -1,12 +1,15 @@
 import { useState } from "react";
-import { TRANSITION_GROUPS, TRANSITION_LABELS, Transition, TransitionType } from "../../types";
+import { TRANSITION_GROUPS, TRANSITION_LABELS, TransitionType } from "../../types";
 
 const DEFAULT_DURATION_SEC = 1.0;
 const MIN_DURATION_SEC = 0.1;
 const MAX_DURATION_SEC = 3.0;
 
 interface TransitionPickerProps {
-  current: Transition | undefined;
+  /** Only the type/duration are read - works for both a clip-to-clip
+   * Transition and an edge-of-timeline EdgeTransition without needing a
+   * fromClipId/toClipId that an edge transition doesn't have. */
+  current: { type: TransitionType; durationSec: number } | undefined;
   maxDurationSec: number;
   onApply: (type: TransitionType, durationSec: number) => void;
   onClear: () => void;

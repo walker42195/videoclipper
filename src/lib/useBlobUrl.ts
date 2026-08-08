@@ -41,11 +41,16 @@ export function useBlobUrl(path: string | null): string | null {
     let cancelled = false;
     let objectUrl: string | null = null;
 
-    readFile(path).then((bytes) => {
-      if (cancelled) return;
-      objectUrl = URL.createObjectURL(new Blob([bytes], { type: guessMimeType(path) }));
-      setUrl(objectUrl);
-    });
+    readFile(path)
+      .then((bytes) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(new Blob([bytes], { type: guessMimeType(path) }));
+        setUrl(objectUrl);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error(`useBlobUrl: failed to read ${path}`, err);
+      });
 
     return () => {
       cancelled = true;

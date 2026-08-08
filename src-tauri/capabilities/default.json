@@ -10,7 +10,7 @@
     "fs:default",
     {
       "identifier": "fs:allow-read-file",
-      "allow": [{ "path": "$HOME/**/*" }]
+      "allow": [{ "path": "$HOME/**/*" }, { "path": "$APPCACHE/**/*" }]
     },
     {
       "identifier": "shell:allow-execute",

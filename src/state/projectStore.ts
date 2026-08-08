@@ -4,6 +4,7 @@ import {
   Clip,
   ClipSource,
   DEFAULT_EXPORT_SETTINGS,
+  EdgeTransition,
   ExportSettings,
   MovieAudioOverride,
   Project,
@@ -28,8 +29,8 @@ interface ProjectState {
   transitions: Transition[];
   movieAudioOverride: MovieAudioOverride | null;
   exportSettings: ExportSettings;
-  introFadeSec: number;
-  outroFadeSec: number;
+  introTransition: EdgeTransition | null;
+  outroTransition: EdgeTransition | null;
   /** Which clip is currently shown in the preview player. */
   previewClipId: string | null;
   addClip: (clip: Clip) => void;
@@ -42,8 +43,8 @@ interface ProjectState {
   clearTransition: (fromClipId: string, toClipId: string) => void;
   setMovieAudioOverride: (override: MovieAudioOverride | null) => void;
   setExportSettings: (settings: ExportSettings) => void;
-  setIntroFadeSec: (sec: number) => void;
-  setOutroFadeSec: (sec: number) => void;
+  setIntroTransition: (transition: EdgeTransition | null) => void;
+  setOutroTransition: (transition: EdgeTransition | null) => void;
   setPreviewClipId: (id: string | null) => void;
   setName: (name: string) => void;
   /** Replaces the whole project state at once (used by "Öppna projekt"). */
@@ -59,8 +60,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   transitions: [],
   movieAudioOverride: null,
   exportSettings: DEFAULT_EXPORT_SETTINGS,
-  introFadeSec: 0,
-  outroFadeSec: 0,
+  introTransition: null,
+  outroTransition: null,
   previewClipId: null,
   // Preview the clip you just added so you can immediately check it looks right.
   addClip: (clip) => set((s) => ({ clips: [...s.clips, clip], previewClipId: clip.id })),
@@ -105,8 +106,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     })),
   setMovieAudioOverride: (movieAudioOverride) => set({ movieAudioOverride }),
   setExportSettings: (exportSettings) => set({ exportSettings }),
-  setIntroFadeSec: (introFadeSec) => set({ introFadeSec }),
-  setOutroFadeSec: (outroFadeSec) => set({ outroFadeSec }),
+  setIntroTransition: (introTransition) => set({ introTransition }),
+  setOutroTransition: (outroTransition) => set({ outroTransition }),
   setPreviewClipId: (previewClipId) => set({ previewClipId }),
   setName: (name) => set({ name }),
   loadProject: (project) =>
@@ -117,8 +118,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       transitions: project.transitions,
       movieAudioOverride: project.movieAudioOverride,
       exportSettings: project.exportSettings,
-      introFadeSec: project.introFadeSec,
-      outroFadeSec: project.outroFadeSec,
+      introTransition: project.introTransition,
+      outroTransition: project.outroTransition,
       previewClipId: null,
     }),
   toProject: () => {
@@ -131,8 +132,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       transitions: s.transitions,
       movieAudioOverride: s.movieAudioOverride,
       exportSettings: s.exportSettings,
-      introFadeSec: s.introFadeSec,
-      outroFadeSec: s.outroFadeSec,
+      introTransition: s.introTransition,
+      outroTransition: s.outroTransition,
     };
   },
 }));

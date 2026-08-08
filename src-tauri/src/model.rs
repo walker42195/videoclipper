@@ -277,6 +277,20 @@ impl Default for ExportSettings {
     }
 }
 
+/// A transition at the very start or end of the whole timeline - against a
+/// synthesized black clip rather than a second real clip (see
+/// `commands::export::build_ffmpeg_args`, which prepends/appends a generated
+/// `color=black` input and runs it through the exact same xfade/acrossfade
+/// machinery as any clip-to-clip `Transition`). This is what gives intro/
+/// outro fades the full transition catalog instead of just fade-to-black.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeTransition {
+    #[serde(rename = "type")]
+    pub transition_type: TransitionType,
+    pub duration_sec: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
@@ -287,13 +301,11 @@ pub struct Project {
     pub transitions: Vec<Transition>,
     pub movie_audio_override: Option<MovieAudioOverride>,
     pub export_settings: ExportSettings,
-    /// Fade-to-black at the very start/end of the whole timeline - distinct
-    /// from `Transition`, which needs two adjacent clips to crossfade
-    /// between. 0 disables. Old saved projects predate these fields.
+    /// Old saved projects predate these fields.
     #[serde(default)]
-    pub intro_fade_sec: f64,
+    pub intro_transition: Option<EdgeTransition>,
     #[serde(default)]
-    pub outro_fade_sec: f64,
+    pub outro_transition: Option<EdgeTransition>,
 }
 
 impl Project {
@@ -306,8 +318,8 @@ impl Project {
             transitions: Vec::new(),
             movie_audio_override: None,
             export_settings: ExportSettings::default(),
-            intro_fade_sec: 0.0,
-            outro_fade_sec: 0.0,
+            intro_transition: None,
+            outro_transition: None,
         }
     }
 

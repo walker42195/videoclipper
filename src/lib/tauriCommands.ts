@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Clip,
   ClipMeta,
+  EdgeTransition,
   ExportSettings,
   LoadProjectResultDto,
   MovieAudioOverride,
@@ -29,28 +30,28 @@ export function exportProject(
   clips: Clip[],
   transitions: Transition[],
   movieAudioOverride: MovieAudioOverride | null,
-  introFadeSec: number,
-  outroFadeSec: number,
+  introTransition: EdgeTransition | null,
+  outroTransition: EdgeTransition | null,
   exportSettings: ExportSettings,
   outputPath: string,
 ): Promise<ExportResult> {
   return invoke("export_project", {
-    request: { clips, transitions, movieAudioOverride, introFadeSec, outroFadeSec, exportSettings, outputPath },
+    request: { clips, transitions, movieAudioOverride, introTransition, outroTransition, exportSettings, outputPath },
   });
 }
 
-/** Renders the whole timeline (clips + transitions + edge fades + movie
- * audio) at a small/fast preset to a temp file, so it can be played back
- * in-app before committing to a full-quality export. */
+/** Renders the whole timeline (clips + transitions + edge transitions +
+ * movie audio) at a small/fast preset to a cache-dir file, so it can be
+ * played back in-app before committing to a full-quality export. */
 export function renderPreview(
   clips: Clip[],
   transitions: Transition[],
   movieAudioOverride: MovieAudioOverride | null,
-  introFadeSec: number,
-  outroFadeSec: number,
+  introTransition: EdgeTransition | null,
+  outroTransition: EdgeTransition | null,
 ): Promise<ExportResult> {
   return invoke("render_preview", {
-    request: { clips, transitions, movieAudioOverride, introFadeSec, outroFadeSec },
+    request: { clips, transitions, movieAudioOverride, introTransition, outroTransition },
   });
 }
 

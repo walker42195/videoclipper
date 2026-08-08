@@ -450,62 +450,6 @@ pub fn build_background_music_chain(
     graph
 }
 
-/// Builds the fade-to-black filter fragment applied to the whole timeline's
-/// final video (and audio, if any) output labels. Unlike inter-clip `xfade`
-/// transitions, there is no "other side" to crossfade with at the very start
-/// of clip 1 or the very end of the last clip, so a plain `fade`/`afade` to
-/// black is the only correct tool here - not the full transition catalog.
-/// Returns an empty string (no-op) if both durations are 0. Each duration is
-/// independently capped at half the total timeline length, same discipline
-/// as [`clamp_transitions`], so intro+outro can never exceed the timeline or
-/// go negative.
-pub fn build_edge_fade_chain(
-    video_label: &str,
-    audio_label: Option<&str>,
-    intro_sec: f64,
-    outro_sec: f64,
-    total_duration_sec: f64,
-    video_output_label: &str,
-    audio_output_label: &str,
-) -> String {
-    if intro_sec <= 0.0 && outro_sec <= 0.0 {
-        return String::new();
-    }
-
-    let cap = total_duration_sec / 2.0;
-    let intro = intro_sec.max(0.0).min(cap);
-    let outro = outro_sec.max(0.0).min(cap);
-    let outro_start = (total_duration_sec - outro).max(0.0);
-
-    let mut video_fades = Vec::new();
-    if intro > 0.0 {
-        video_fades.push(format!("fade=t=in:st=0:d={intro}"));
-    }
-    if outro > 0.0 {
-        video_fades.push(format!("fade=t=out:st={outro_start}:d={outro}"));
-    }
-    let mut graph = format!(
-        "[{video_label}]{}[{video_output_label}];\n",
-        video_fades.join(","),
-    );
-
-    if let Some(a) = audio_label {
-        let mut audio_fades = Vec::new();
-        if intro > 0.0 {
-            audio_fades.push(format!("afade=t=in:d={intro}"));
-        }
-        if outro > 0.0 {
-            audio_fades.push(format!("afade=t=out:st={outro_start}:d={outro}"));
-        }
-        graph.push_str(&format!(
-            "[{a}]{}[{audio_output_label}];\n",
-            audio_fades.join(","),
-        ));
-    }
-
-    graph
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,39 +766,6 @@ mod tests {
         assert!(chain.contains("fontcolor=#FFFFFF"));
         // drawtext must run before scale/pad, not after.
         assert!(chain.find("drawtext=").unwrap() < chain.find("scale=").unwrap());
-    }
-
-    #[test]
-    fn edge_fade_chain_no_op_when_both_durations_zero() {
-        assert_eq!(build_edge_fade_chain("vout", Some("aout"), 0.0, 0.0, 10.0, "voutfaded", "aoutfaded"), "");
-    }
-
-    #[test]
-    fn edge_fade_chain_intro_only_no_audio() {
-        let graph = build_edge_fade_chain("vout", None, 1.5, 0.0, 10.0, "voutfaded", "aoutfaded");
-        assert_eq!(graph, "[vout]fade=t=in:st=0:d=1.5[voutfaded];\n");
-    }
-
-    #[test]
-    fn edge_fade_chain_outro_only_with_audio() {
-        let graph = build_edge_fade_chain("vout", Some("aout"), 0.0, 2.0, 10.0, "voutfaded", "aoutfaded");
-        assert!(graph.contains("[vout]fade=t=out:st=8:d=2[voutfaded];\n"));
-        assert!(graph.contains("[aout]afade=t=out:st=8:d=2[aoutfaded];\n"));
-        assert!(!graph.contains("fade=t=in"));
-    }
-
-    #[test]
-    fn edge_fade_chain_both_intro_and_outro_with_audio() {
-        let graph = build_edge_fade_chain("vout", Some("aout"), 1.0, 1.5, 10.0, "voutfaded", "aoutfaded");
-        assert_eq!(graph, "[vout]fade=t=in:st=0:d=1,fade=t=out:st=8.5:d=1.5[voutfaded];\n[aout]afade=t=in:d=1,afade=t=out:st=8.5:d=1.5[aoutfaded];\n");
-    }
-
-    #[test]
-    fn edge_fade_chain_clamps_each_fade_to_half_total_duration() {
-        // 4s total, intro+outro both request 3s each - each independently
-        // capped at total/2 = 2s so they can't exceed or go negative.
-        let graph = build_edge_fade_chain("vout", None, 3.0, 3.0, 4.0, "voutfaded", "aoutfaded");
-        assert_eq!(graph, "[vout]fade=t=in:st=0:d=2,fade=t=out:st=2:d=2[voutfaded];\n");
     }
 
     #[test]

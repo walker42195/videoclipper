@@ -43,8 +43,8 @@ function App() {
     clips,
     transitions,
     movieAudioOverride,
-    introFadeSec,
-    outroFadeSec,
+    introTransition,
+    outroTransition,
     addClip,
     exportSettings,
     toProject,
@@ -170,8 +170,8 @@ function App() {
         clips,
         transitions,
         movieAudioOverride,
-        introFadeSec,
-        outroFadeSec,
+        introTransition,
+        outroTransition,
         exportSettings,
         outputPath,
       );
@@ -199,7 +199,7 @@ function App() {
     setStatusMessage("Renderar förhandsvisning...");
 
     try {
-      const result = await renderPreview(clips, transitions, movieAudioOverride, introFadeSec, outroFadeSec);
+      const result = await renderPreview(clips, transitions, movieAudioOverride, introTransition, outroTransition);
       setPreviewMoviePath(result.outputPath);
       setStatusMessage("Förhandsvisning klar.");
     } catch (err) {

@@ -15,7 +15,7 @@ import {
 import { useProjectStore } from "../../state/projectStore";
 import { ClipCard } from "./ClipCard";
 import { TransitionBadge } from "./TransitionBadge";
-import { EdgeFadeBadge } from "./EdgeFadeBadge";
+import { EdgeTransitionBadge } from "./EdgeTransitionBadge";
 
 export function Timeline() {
   const {
@@ -24,12 +24,11 @@ export function Timeline() {
     removeClip,
     moveClip,
     updateClipTrim,
-    introFadeSec,
-    outroFadeSec,
-    setIntroFadeSec,
-    setOutroFadeSec,
+    introTransition,
+    outroTransition,
+    setIntroTransition,
+    setOutroTransition,
   } = useProjectStore();
-  const totalDurationSec = clips.reduce((sum, c) => sum + (c.trimOutSec - c.trimInSec), 0);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -57,11 +56,11 @@ export function Timeline() {
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
       <SortableContext items={clips.map((c) => c.id)} strategy={horizontalListSortingStrategy}>
         <div className="timeline">
-          <EdgeFadeBadge
+          <EdgeTransitionBadge
             label="Start"
-            fadeSec={introFadeSec}
-            maxDurationSec={totalDurationSec / 2}
-            onChange={setIntroFadeSec}
+            transition={introTransition}
+            maxDurationSec={clips[0].trimOutSec - clips[0].trimInSec}
+            onChange={setIntroTransition}
           />
           {clips.map((clip, index) => (
             <div className="timeline-item" key={clip.id}>
@@ -77,11 +76,11 @@ export function Timeline() {
               )}
             </div>
           ))}
-          <EdgeFadeBadge
+          <EdgeTransitionBadge
             label="Slut"
-            fadeSec={outroFadeSec}
-            maxDurationSec={totalDurationSec / 2}
-            onChange={setOutroFadeSec}
+            transition={outroTransition}
+            maxDurationSec={clips[clips.length - 1].trimOutSec - clips[clips.length - 1].trimInSec}
+            onChange={setOutroTransition}
           />
         </div>
       </SortableContext>
