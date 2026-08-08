@@ -21,7 +21,7 @@ scripts/fetch-ffmpeg.sh linux   # vendors ffmpeg/ffprobe sidecar binaries (gitig
 pnpm tauri dev
 ```
 
-## Building
+## Building on Linux
 
 ```bash
 pnpm tauri build --bundles deb        # Linux (.deb)
@@ -29,8 +29,33 @@ pnpm tauri build --bundles appimage   # Linux (AppImage)
 pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis   # Windows, cross-compiled from Linux
 ```
 
+## Building on Windows
+
+To compile natively on Windows (rather than cross-compiling from Linux):
+
+1. **Rust** — install via [rustup](https://rustup.rs); the default MSVC toolchain is what Tauri expects on Windows.
+2. **Microsoft C++ Build Tools** — install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload (Rust's MSVC linker needs it). See [Tauri's Windows prerequisites](https://v2.tauri.app/start/prerequisites/#windows).
+3. **WebView2** — already installed on current Windows 10/11; if missing, get it from [Microsoft's WebView2 page](https://developer.microsoft.com/microsoft-edge/webview2/).
+4. **Node.js** and **pnpm** — install Node.js, then `npm install -g pnpm`.
+5. **Git for Windows** — provides Git Bash, needed to run `scripts/fetch-ffmpeg.sh` (a bash script). WSL works too.
+
+Then, from a Git Bash (or WSL) prompt in the project root:
+
+```bash
+pnpm install
+scripts/fetch-ffmpeg.sh windows   # vendors the Windows ffmpeg/ffprobe sidecar binaries
+pnpm tauri dev                    # run in development
+pnpm tauri build --bundles nsis   # produce a Windows installer (.exe)
+```
+
+The built installer lands at `src-tauri/target/release/bundle/nsis/`.
+
 ## Tech stack
 
 - **Frontend**: React, TypeScript, [zustand](https://github.com/pmndrs/zustand) for state, [@dnd-kit](https://dndkit.com) for the drag-and-drop timeline.
 - **Backend**: Rust, [Tauri v2](https://tauri.app), ffmpeg run as a bundled sidecar process.
 - All video composition (normalization, transitions, text overlays, audio mixing) is expressed as a single `ffmpeg -filter_complex` graph built from the project's clip/transition/audio data.
+
+## License
+
+[GPL-3.0-or-later](LICENSE) — Copyright (C) 2026 walker42195.
