@@ -1,6 +1,7 @@
 use crate::ffmpeg::filtergraph::{
-    build_background_music_chain, build_transition_graph, AudioReplacement, BackgroundMusicSpec,
-    GraphClip, NormalizeTarget, TextOverlaySpec, TransitionJunction, CUT_DURATION_SEC,
+    build_background_music_chain, build_edge_fade_chain, build_transition_graph, AudioReplacement,
+    BackgroundMusicSpec, GraphClip, NormalizeTarget, TextOverlaySpec, TransitionJunction,
+    CUT_DURATION_SEC,
 };
 use crate::ffmpeg::progress::ProgressParser;
 use crate::model::{
@@ -69,6 +70,11 @@ pub struct ExportRequest {
     /// as a hard cut (see [`CUT_DURATION_SEC`]).
     pub transitions: Vec<Transition>,
     pub movie_audio_override: Option<MovieAudioOverride>,
+    /// Fade-to-black at the very start/end of the whole timeline. 0 disables.
+    #[serde(default)]
+    pub intro_fade_sec: f64,
+    #[serde(default)]
+    pub outro_fade_sec: f64,
     pub export_settings: ExportSettings,
     pub output_path: String,
 }
@@ -210,6 +216,12 @@ fn build_ffmpeg_args(
     let (mut filter_complex, mut maps, total_duration_sec) =
         build_transition_graph(&graph_clips, target, &junctions);
 
+    // Tracks whichever label currently holds the timeline's final audio (if
+    // any), so the edge-fade step below doesn't need to know whether it came
+    // from the plain transition graph or got replaced by background music.
+    let mut current_audio_label: Option<String> =
+        maps.iter().any(|m| m == "[aout]").then(|| "aout".to_string());
+
     if let Some(movie_audio) = &request.movie_audio_override {
         let music_input_index = next_input_index;
         args.push("-i".into());
@@ -239,6 +251,28 @@ fn build_ffmpeg_args(
         ));
         maps.push("-map".into());
         maps.push("[finalaudio]".into());
+        current_audio_label = Some("finalaudio".to_string());
+    }
+
+    if request.intro_fade_sec > 0.0 || request.outro_fade_sec > 0.0 {
+        filter_complex.push_str(&build_edge_fade_chain(
+            "vout",
+            current_audio_label.as_deref(),
+            request.intro_fade_sec,
+            request.outro_fade_sec,
+            total_duration_sec,
+            "voutfaded",
+            "aoutfaded",
+        ));
+        for m in maps.iter_mut() {
+            if m == "[vout]" {
+                *m = "[voutfaded]".into();
+            } else if let Some(label) = &current_audio_label {
+                if *m == format!("[{label}]") {
+                    *m = "[aoutfaded]".into();
+                }
+            }
+        }
     }
 
     args.push("-filter_complex".into());
@@ -264,10 +298,14 @@ fn build_ffmpeg_args(
     (args, total_duration_sec)
 }
 
-#[tauri::command]
-pub async fn export_project(
-    app: AppHandle,
-    state: State<'_, ExportHandle>,
+/// Shared by `export_project` and `render_preview` - the two commands differ
+/// only in what `ExportRequest` they build (real output path + user's chosen
+/// quality settings, vs. a temp cache-dir path + fixed fast/low-quality
+/// settings), everything downstream (spawn, progress events, cancel,
+/// cleanup) is identical.
+async fn run_export(
+    app: &AppHandle,
+    state: &State<'_, ExportHandle>,
     request: ExportRequest,
 ) -> Result<ExportResult, String> {
     if request.clips.is_empty() {
@@ -358,6 +396,96 @@ pub async fn export_project(
     })
 }
 
+#[tauri::command]
+pub async fn export_project(
+    app: AppHandle,
+    state: State<'_, ExportHandle>,
+    request: ExportRequest,
+) -> Result<ExportResult, String> {
+    run_export(&app, &state, request).await
+}
+
+/// Same timeline data as [`ExportRequest`], minus the fields the preview
+/// pipeline fixes itself (output path, quality settings) - the whole point
+/// is the caller can't accidentally ask for a slow, full-resolution preview.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewRequest {
+    pub clips: Vec<Clip>,
+    pub transitions: Vec<Transition>,
+    pub movie_audio_override: Option<MovieAudioOverride>,
+    #[serde(default)]
+    pub intro_fade_sec: f64,
+    #[serde(default)]
+    pub outro_fade_sec: f64,
+}
+
+const PREVIEW_FILE_PREFIX: &str = "videoclipper_preview_";
+
+/// Renders the whole timeline (clips + transitions + edge fades + movie
+/// audio) at a small/fast preset to a file in the app's cache dir, so the
+/// user can watch the actual composited result - including transitions -
+/// before committing to a full-quality export. This is the "Rendera
+/// förhandsvisning" fallback the original plan scoped v1's preview down to,
+/// rather than a real-time in-browser compositor.
+///
+/// The cache dir (not a bare temp dir) matters: the frontend reads the
+/// result back via the fs plugin, whose capability scope is `$HOME/**/*` -
+/// `std::env::temp_dir()` (`/tmp` on Linux) falls outside that scope, while
+/// the app's cache dir lives under the user's home on every platform Tauri
+/// supports. Each render gets a fresh unique filename (old ones are swept
+/// first) rather than a fixed name, so a second preview after an edit is
+/// guaranteed to be read back fresh instead of the frontend's blob-URL cache
+/// reusing the previous render for an unchanged path.
+#[tauri::command]
+pub async fn render_preview(
+    app: AppHandle,
+    state: State<'_, ExportHandle>,
+    request: PreviewRequest,
+) -> Result<ExportResult, String> {
+    if request.clips.is_empty() {
+        return Err("project has no clips".into());
+    }
+
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("failed to resolve cache dir: {e}"))?;
+    std::fs::create_dir_all(&cache_dir).map_err(|e| format!("failed to create cache dir: {e}"))?;
+
+    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(PREVIEW_FILE_PREFIX) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let output_path = cache_dir.join(format!("{PREVIEW_FILE_PREFIX}{}.mp4", uuid::Uuid::new_v4()));
+
+    let export_request = ExportRequest {
+        clips: request.clips,
+        transitions: request.transitions,
+        movie_audio_override: request.movie_audio_override,
+        intro_fade_sec: request.intro_fade_sec,
+        outro_fade_sec: request.outro_fade_sec,
+        export_settings: ExportSettings {
+            preset: "preview".into(),
+            container: "mp4".into(),
+            video_codec: "libx264".into(),
+            crf: 30,
+            x264_preset: "ultrafast".into(),
+            max_width: 640,
+            fps: 24,
+            audio_codec: "aac".into(),
+            audio_bitrate_kbps: 96,
+            faststart: true,
+        },
+        output_path: output_path.to_string_lossy().to_string(),
+    };
+
+    run_export(&app, &state, export_request).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +539,8 @@ mod tests {
             clips,
             transitions: vec![],
             movie_audio_override,
+            intro_fade_sec: 0.0,
+            outro_fade_sec: 0.0,
             export_settings: ExportSettings::default(),
             output_path: "out.mp4".into(),
         }
@@ -541,6 +671,75 @@ mod tests {
         assert_eq!(filter_complex.matches("drawtext=").count(), 1);
     }
 
+    #[test]
+    fn edge_fades_remap_final_video_and_audio_labels() {
+        let mut req = request(
+            vec![clip("c0", "clip0.mp4", true, None), clip("c1", "clip1.mp4", true, None)],
+            None,
+        );
+        req.intro_fade_sec = 1.0;
+        req.outro_fade_sec = 1.0;
+        let (args, _total) = build_ffmpeg_args(&req, &HashMap::new(), "/fake/font.ttf");
+
+        let filter_complex = args
+            .iter()
+            .position(|a| a == "-filter_complex")
+            .map(|i| args[i + 1].as_str())
+            .unwrap();
+        assert!(filter_complex.contains("[vout]fade=t=in:st=0:d=1,fade=t=out"));
+        assert!(filter_complex.contains("[aout]afade=t=in:d=1,afade=t=out"));
+
+        let map_args: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "-map")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(map_args, vec!["[voutfaded]", "[aoutfaded]"]);
+    }
+
+    #[test]
+    fn edge_fades_with_movie_audio_remap_finalaudio_not_aout() {
+        let mut req = request(
+            vec![clip("c0", "clip0.mp4", true, None)],
+            Some(MovieAudioOverride {
+                source_path: "music.mp3".into(),
+                blend_mode: AudioBlendMode::Mix,
+                fill_mode: AudioMode::Loop,
+                gain_db: -18.0,
+                fade_in_sec: 0.0,
+                fade_out_sec: 0.0,
+            }),
+        );
+        req.intro_fade_sec = 0.5;
+        let (args, _total) = build_ffmpeg_args(&req, &HashMap::new(), "/fake/font.ttf");
+
+        let filter_complex = args
+            .iter()
+            .position(|a| a == "-filter_complex")
+            .map(|i| args[i + 1].as_str())
+            .unwrap();
+        assert!(filter_complex.contains("[finalaudio]afade=t=in:d=0.5[aoutfaded]"));
+
+        let map_args: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "-map")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(map_args, vec!["[voutfaded]", "[aoutfaded]"]);
+    }
+
+    #[test]
+    fn no_edge_fades_leaves_maps_untouched() {
+        let req = request(vec![clip("c0", "clip0.mp4", true, None)], None);
+        let (args, _total) = build_ffmpeg_args(&req, &HashMap::new(), "/fake/font.ttf");
+        let map_args: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "-map")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(map_args, vec!["[vout]", "[aout]"]);
+    }
+
     /// End-to-end sanity check against the real vendored ffmpeg binary:
     /// generates tiny synthetic clips/audio with distinct tones, builds the
     /// exact production args for a per-clip-override + movie-audio-mix
@@ -645,6 +844,94 @@ mod tests {
         );
         assert!(out.exists());
         assert!(std::fs::metadata(&out).unwrap().len() > 0);
+    }
+
+    /// End-to-end sanity check for intro/outro edge fades against the real
+    /// vendored ffmpeg binary: confirms (a) the fades don't change the
+    /// output's total duration (they're overlaid on the existing timeline,
+    /// not inserted as extra time) and (b) frames actually go near-black
+    /// during the fade windows but not in the middle of the timeline - a
+    /// pure filtergraph-string test can assert the `fade=` filter text is
+    /// present but not that ffmpeg actually renders black pixels from it.
+    /// Ignored by default; run with `cargo test -- --ignored real_ffmpeg`.
+    #[test]
+    #[ignore]
+    fn real_ffmpeg_edge_fades_produce_near_black_frames_without_changing_duration() {
+        let dir = std::env::temp_dir().join("videoclipper_edge_fade_verify");
+        let _ = std::fs::create_dir_all(&dir);
+        let ffmpeg = std::env::current_dir().unwrap().join("binaries/ffmpeg-x86_64-unknown-linux-gnu");
+        let ffprobe = std::env::current_dir().unwrap().join("binaries/ffprobe-x86_64-unknown-linux-gnu");
+        assert!(ffmpeg.exists(), "run scripts/fetch-ffmpeg.sh linux first");
+        assert!(ffprobe.exists(), "run scripts/fetch-ffmpeg.sh linux first");
+
+        let gen = |tone_hz: u32, out: &std::path::Path| {
+            let status = std::process::Command::new(&ffmpeg)
+                .args([
+                    "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=3",
+                    "-f", "lavfi", "-i", &format!("sine=frequency={tone_hz}:duration=3"),
+                    "-shortest", out.to_str().unwrap(),
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+
+        let clip0 = dir.join("clip0.mp4");
+        let clip1 = dir.join("clip1.mp4");
+        let out = dir.join("out.mp4");
+        gen(440, &clip0);
+        gen(220, &clip1);
+
+        let clips = vec![
+            clip("c0", clip0.to_str().unwrap(), true, None),
+            clip("c1", clip1.to_str().unwrap(), true, None),
+        ];
+        let mut req = request(clips, None);
+        req.intro_fade_sec = 0.5;
+        req.outro_fade_sec = 0.5;
+        req.output_path = out.to_str().unwrap().into();
+
+        let (mut args, total_duration_sec) = build_ffmpeg_args(&req, &HashMap::new(), "/fake/font.ttf");
+        args.push("-nostats".into());
+        args.push(req.output_path.clone());
+
+        let output = std::process::Command::new(&ffmpeg).args(&args).output().unwrap();
+        assert!(output.status.success(), "ffmpeg failed:\n{}", String::from_utf8_lossy(&output.stderr));
+
+        // (a) duration unchanged: the fades overlay the existing video/audio,
+        // they don't extend the timeline.
+        let probe = std::process::Command::new(&ffprobe)
+            .args(["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", out.to_str().unwrap()])
+            .output()
+            .unwrap();
+        let actual_duration: f64 = String::from_utf8_lossy(&probe.stdout).trim().parse().unwrap();
+        assert!(
+            (actual_duration - total_duration_sec).abs() < 0.3,
+            "expected output duration ~{total_duration_sec}s, got {actual_duration}s"
+        );
+
+        // (b) grab a grayscale frame at a given timestamp and return its mean
+        // brightness (0 = black, 255 = white).
+        let mean_brightness_at = |timestamp_sec: f64| -> f64 {
+            let frame = std::process::Command::new(&ffmpeg)
+                .args([
+                    "-ss", &timestamp_sec.to_string(), "-i", out.to_str().unwrap(),
+                    "-vframes", "1", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1",
+                ])
+                .output()
+                .unwrap();
+            assert!(!frame.stdout.is_empty(), "no frame decoded at t={timestamp_sec}");
+            let sum: u64 = frame.stdout.iter().map(|&b| b as u64).sum();
+            sum as f64 / frame.stdout.len() as f64
+        };
+
+        let near_start = mean_brightness_at(0.05);
+        let near_end = mean_brightness_at((total_duration_sec - 0.05).max(0.0));
+        let middle = mean_brightness_at(total_duration_sec / 2.0);
+
+        assert!(near_start < 30.0, "expected near-black frame during intro fade, got mean brightness {near_start}");
+        assert!(near_end < 30.0, "expected near-black frame during outro fade, got mean brightness {near_end}");
+        assert!(middle > 60.0, "expected a normal (non-faded) frame in the middle, got mean brightness {middle}");
     }
 
     /// Exercises the OS-level mechanics `cancel_export` relies on:

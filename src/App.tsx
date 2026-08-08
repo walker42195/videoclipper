@@ -9,6 +9,7 @@ import {
   exportProject,
   loadProject,
   probeClip,
+  renderPreview,
   saveProject,
 } from "./lib/tauriCommands";
 import { useBlobUrl } from "./lib/useBlobUrl";
@@ -38,14 +39,25 @@ function formatBytes(bytes: number): string {
 }
 
 function App() {
-  const { clips, transitions, movieAudioOverride, addClip, exportSettings, toProject, loadProject: hydrateProject } =
-    useProjectStore();
+  const {
+    clips,
+    transitions,
+    movieAudioOverride,
+    introFadeSec,
+    outroFadeSec,
+    addClip,
+    exportSettings,
+    toProject,
+    loadProject: hydrateProject,
+  } = useProjectStore();
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [exportedMoviePath, setExportedMoviePath] = useState<string | null>(null);
+  const [previewMoviePath, setPreviewMoviePath] = useState<string | null>(null);
   const [currentProjectPath, setCurrentProjectPath] = useState<string | null>(null);
   const exportedMovieUrl = useBlobUrl(exportedMoviePath);
+  const previewMovieUrl = useBlobUrl(previewMoviePath);
 
   useEffect(() => {
     const unlisten = listen<ExportProgress>("export://progress", (event) => {
@@ -154,7 +166,15 @@ function App() {
     }
 
     try {
-      const result = await exportProject(clips, transitions, movieAudioOverride, exportSettings, outputPath);
+      const result = await exportProject(
+        clips,
+        transitions,
+        movieAudioOverride,
+        introFadeSec,
+        outroFadeSec,
+        exportSettings,
+        outputPath,
+      );
       setStatusMessage(`Klart! Sparad till ${result.outputPath}`);
       setExportedMoviePath(result.outputPath);
     } catch (err) {
@@ -169,8 +189,33 @@ function App() {
     }
   }
 
+  async function handleRenderPreview() {
+    if (clips.length === 0) {
+      setStatusMessage("Lägg till minst ett klipp innan förhandsgranskning.");
+      return;
+    }
+    setBusy(true);
+    setProgress(null);
+    setStatusMessage("Renderar förhandsvisning...");
+
+    try {
+      const result = await renderPreview(clips, transitions, movieAudioOverride, introFadeSec, outroFadeSec);
+      setPreviewMoviePath(result.outputPath);
+      setStatusMessage("Förhandsvisning klar.");
+    } catch (err) {
+      if (String(err) === "cancelled") {
+        setStatusMessage("Förhandsvisning avbruten.");
+      } else {
+        setStatusMessage(`Förhandsvisning misslyckades:\n${err}`);
+      }
+    } finally {
+      setBusy(false);
+      setProgress(null);
+    }
+  }
+
   async function handleCancelExport() {
-    setStatusMessage("Avbryter export...");
+    setStatusMessage("Avbryter...");
     try {
       await cancelExport();
     } catch (err) {
@@ -213,6 +258,7 @@ function App() {
       setCurrentProjectPath(selected);
       localStorage.setItem(LAST_PROJECT_DIR_KEY, await dirname(selected));
       setExportedMoviePath(null);
+      setPreviewMoviePath(null);
       if (result.missingMedia.length > 0) {
         setStatusMessage(
           `Projekt öppnat, men ${result.missingMedia.length} klipp saknas på disk: ${result.missingMedia
@@ -244,11 +290,16 @@ function App() {
           + Textkort
         </button>
         {!busy ? (
-          <button onClick={handleExport} disabled={clips.length === 0}>
-            Exportera film
-          </button>
+          <>
+            <button onClick={handleRenderPreview} disabled={clips.length === 0}>
+              Förhandsgranska film
+            </button>
+            <button onClick={handleExport} disabled={clips.length === 0}>
+              Exportera film
+            </button>
+          </>
         ) : (
-          <button onClick={handleCancelExport}>Avbryt export</button>
+          <button onClick={handleCancelExport}>Avbryt</button>
         )}
         <button onClick={() => handleSaveProject(false)} disabled={busy}>
           Spara projekt
@@ -288,8 +339,16 @@ function App() {
           <p className="status-message">{statusMessage}</p>
         ))}
 
+      {previewMovieUrl && (
+        <div className="movie-player">
+          <p className="movie-player-label">Förhandsgranskning (lågkvalitet, med övergångar)</p>
+          <video controls autoPlay src={previewMovieUrl} />
+        </div>
+      )}
+
       {exportedMovieUrl && (
         <div className="movie-player">
+          <p className="movie-player-label">Exporterad film</p>
           <video controls src={exportedMovieUrl} />
         </div>
       )}

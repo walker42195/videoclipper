@@ -287,6 +287,13 @@ pub struct Project {
     pub transitions: Vec<Transition>,
     pub movie_audio_override: Option<MovieAudioOverride>,
     pub export_settings: ExportSettings,
+    /// Fade-to-black at the very start/end of the whole timeline - distinct
+    /// from `Transition`, which needs two adjacent clips to crossfade
+    /// between. 0 disables. Old saved projects predate these fields.
+    #[serde(default)]
+    pub intro_fade_sec: f64,
+    #[serde(default)]
+    pub outro_fade_sec: f64,
 }
 
 impl Project {
@@ -299,6 +306,8 @@ impl Project {
             transitions: Vec::new(),
             movie_audio_override: None,
             export_settings: ExportSettings::default(),
+            intro_fade_sec: 0.0,
+            outro_fade_sec: 0.0,
         }
     }
 

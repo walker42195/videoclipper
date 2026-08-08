@@ -2,7 +2,7 @@ mod commands;
 mod ffmpeg;
 mod model;
 
-use commands::export::{cancel_export, export_project, ExportHandle};
+use commands::export::{cancel_export, export_project, render_preview, ExportHandle};
 use commands::probe::{extract_thumbnail, ffmpeg_version, probe_clip};
 use commands::project::{available_disk_space_bytes, load_project, save_project};
 
@@ -34,6 +34,7 @@ pub fn run() {
             probe_clip,
             extract_thumbnail,
             export_project,
+            render_preview,
             cancel_export,
             save_project,
             load_project,

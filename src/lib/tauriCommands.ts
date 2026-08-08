@@ -29,11 +29,28 @@ export function exportProject(
   clips: Clip[],
   transitions: Transition[],
   movieAudioOverride: MovieAudioOverride | null,
+  introFadeSec: number,
+  outroFadeSec: number,
   exportSettings: ExportSettings,
   outputPath: string,
 ): Promise<ExportResult> {
   return invoke("export_project", {
-    request: { clips, transitions, movieAudioOverride, exportSettings, outputPath },
+    request: { clips, transitions, movieAudioOverride, introFadeSec, outroFadeSec, exportSettings, outputPath },
+  });
+}
+
+/** Renders the whole timeline (clips + transitions + edge fades + movie
+ * audio) at a small/fast preset to a temp file, so it can be played back
+ * in-app before committing to a full-quality export. */
+export function renderPreview(
+  clips: Clip[],
+  transitions: Transition[],
+  movieAudioOverride: MovieAudioOverride | null,
+  introFadeSec: number,
+  outroFadeSec: number,
+): Promise<ExportResult> {
+  return invoke("render_preview", {
+    request: { clips, transitions, movieAudioOverride, introFadeSec, outroFadeSec },
   });
 }
 

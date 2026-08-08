@@ -312,7 +312,14 @@ export interface Project {
   transitions: Transition[];
   movieAudioOverride: MovieAudioOverride | null;
   exportSettings: ExportSettings;
+  /** Fade-to-black at the very start/end of the whole timeline - distinct
+   * from Transition, which needs two adjacent clips to crossfade between.
+   * 0 disables. */
+  introFadeSec: number;
+  outroFadeSec: number;
 }
+
+export const MAX_EDGE_FADE_SEC = 5;
 
 export interface ClipMeta {
   durationSec: number;
