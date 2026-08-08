@@ -888,6 +888,75 @@ mod tests {
         assert!(std::fs::metadata(&out).unwrap().len() > 0);
     }
 
+    /// Regression test: replacing all audio (movie audio override in
+    /// `Replace` mode) while the timeline's own clips have real audio used
+    /// to make ffmpeg hard-fail with "Filter 'anull:default' has output 1
+    /// (aout) unconnected" / "Error binding filtergraph inputs/outputs:
+    /// Invalid argument" - the timeline's `[aout]` label was a genuine
+    /// filter output that nothing ever consumed once Replace mode discarded
+    /// it. A pure filtergraph-string test can assert the fixed graph
+    /// *contains* `anullsink`, but only real ffmpeg proves the graph is
+    /// actually valid. Also includes an intro edge transition since that's
+    /// the exact combination that surfaced the bug. Ignored by default; run
+    /// with `cargo test -- --ignored real_ffmpeg`.
+    #[test]
+    #[ignore]
+    fn real_ffmpeg_accepts_replace_mode_movie_audio_with_real_timeline_audio_present() {
+        let dir = std::env::temp_dir().join("videoclipper_replace_audio_verify");
+        let _ = std::fs::create_dir_all(&dir);
+        let ffmpeg = std::env::current_dir().unwrap().join("binaries/ffmpeg-x86_64-unknown-linux-gnu");
+        assert!(ffmpeg.exists(), "run scripts/fetch-ffmpeg.sh linux first");
+
+        let gen = |tone_hz: u32, out: &std::path::Path| {
+            let status = std::process::Command::new(&ffmpeg)
+                .args([
+                    "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=3",
+                    "-f", "lavfi", "-i", &format!("sine=frequency={tone_hz}:duration=3"),
+                    "-shortest", out.to_str().unwrap(),
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+
+        let clip0 = dir.join("clip0.mp4");
+        let clip1 = dir.join("clip1.mp4");
+        let music = dir.join("music.mp3");
+        let out = dir.join("out.mp4");
+        gen(440, &clip0);
+        gen(220, &clip1);
+        let status = std::process::Command::new(&ffmpeg)
+            .args(["-y", "-f", "lavfi", "-i", "sine=frequency=110:duration=2", music.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let clips = vec![
+            clip("c0", clip0.to_str().unwrap(), true, None),
+            clip("c1", clip1.to_str().unwrap(), true, None),
+        ];
+        let movie_audio = MovieAudioOverride {
+            source_path: music.to_str().unwrap().into(),
+            blend_mode: AudioBlendMode::Replace,
+            fill_mode: AudioMode::Loop,
+            gain_db: 0.0,
+            fade_in_sec: 0.0,
+            fade_out_sec: 0.0,
+        };
+        let mut req = request(clips, Some(movie_audio));
+        req.intro_transition = Some(EdgeTransition { transition_type: TransitionType::Fade, duration_sec: 0.5 });
+        req.output_path = out.to_str().unwrap().into();
+
+        let (mut args, _total) = build_ffmpeg_args(&req, &HashMap::new(), "/fake/font.ttf");
+        args.push("-nostats".into());
+        args.push(req.output_path.clone());
+
+        let output = std::process::Command::new(&ffmpeg).args(&args).output().unwrap();
+        assert!(output.status.success(), "ffmpeg failed:\n{}", String::from_utf8_lossy(&output.stderr));
+        assert!(out.exists());
+        assert!(std::fs::metadata(&out).unwrap().len() > 0);
+    }
+
     /// End-to-end sanity check for intro/outro edge transitions against the
     /// real vendored ffmpeg binary: confirms (a) they don't change the
     /// output's total duration (the synthetic black clip is consumed

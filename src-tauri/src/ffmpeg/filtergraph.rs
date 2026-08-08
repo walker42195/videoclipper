@@ -403,9 +403,15 @@ pub struct BackgroundMusicSpec {
 /// Builds the filter_complex fragment that layers a background-music input
 /// onto `base_audio_label` (the `"aout"` label from [`build_transition_graph`],
 /// or `None` if the timeline has no audio at all) and produces
-/// `output_label`. In [`AudioBlendMode::Replace`] mode `base_audio_label` is
-/// ignored entirely; in [`AudioBlendMode::Mix`] mode with no base audio,
-/// mixing degrades to just using the music track (nothing to mix with).
+/// `output_label`. In [`AudioBlendMode::Replace`] mode the *audio* from
+/// `base_audio_label` is ignored, but if it's `Some`, the label itself still
+/// exists as a real filter output and must be explicitly discarded via
+/// `anullsink` - ffmpeg hard-errors ("Filter ... has output ... unconnected")
+/// on any filtergraph output that isn't consumed by something once explicit
+/// `-map` args are used elsewhere (which this pipeline always does), so
+/// simply never mapping it is not enough. In [`AudioBlendMode::Mix`] mode
+/// with no base audio, mixing degrades to just using the music track
+/// (nothing to mix with, and nothing to discard either).
 pub fn build_background_music_chain(
     spec: &BackgroundMusicSpec,
     base_audio_label: Option<&str>,
@@ -442,7 +448,11 @@ pub fn build_background_music_chain(
                 "[{base}][{MUSIC_LABEL}]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[{output_label}];\n"
             ));
         }
-        (AudioBlendMode::Replace, _) | (AudioBlendMode::Mix, None) => {
+        (AudioBlendMode::Replace, Some(base)) => {
+            graph.push_str(&format!("[{base}]anullsink;\n"));
+            graph.push_str(&format!("[{MUSIC_LABEL}]anull[{output_label}];\n"));
+        }
+        (AudioBlendMode::Replace, None) | (AudioBlendMode::Mix, None) => {
             graph.push_str(&format!("[{MUSIC_LABEL}]anull[{output_label}];\n"));
         }
     }
@@ -684,7 +694,11 @@ mod tests {
     }
 
     #[test]
-    fn background_music_replace_mode_ignores_base_audio() {
+    fn background_music_replace_mode_discards_base_audio_via_anullsink() {
+        // Regression test: ffmpeg hard-errors ("Filter ... has output ...
+        // unconnected") if [aout] is left in the graph but never referenced
+        // anywhere, which is exactly what happened before this was fixed -
+        // Replace mode must explicitly sink it, not just skip mapping it.
         let spec = BackgroundMusicSpec {
             input_index: 2,
             blend_mode: AudioBlendMode::Replace,
@@ -695,7 +709,24 @@ mod tests {
         };
         let graph = build_background_music_chain(&spec, Some("aout"), 10.0, 48000, "finalaudio");
         assert!(!graph.contains("amix"));
-        assert!(!graph.contains("[aout]"));
+        assert!(graph.contains("[aout]anullsink;"));
+        assert!(graph.contains("[bgmusic]anull[finalaudio]"));
+    }
+
+    #[test]
+    fn background_music_replace_mode_with_no_base_audio_skips_anullsink() {
+        // Nothing to discard when the timeline never had an [aout] label -
+        // must not fabricate a reference to a label that doesn't exist.
+        let spec = BackgroundMusicSpec {
+            input_index: 1,
+            blend_mode: AudioBlendMode::Replace,
+            fill_mode: AudioMode::Loop,
+            gain_db: 0.0,
+            fade_in_sec: 0.0,
+            fade_out_sec: 0.0,
+        };
+        let graph = build_background_music_chain(&spec, None, 10.0, 48000, "finalaudio");
+        assert!(!graph.contains("anullsink"));
         assert!(graph.contains("[bgmusic]anull[finalaudio]"));
     }
 
