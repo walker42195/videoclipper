@@ -1,0 +1,15 @@
+### 1. Det rekommenderade sättet (Skapa en installerbar fil)
+Tauri är byggt för att skapa riktiga installationspaket (som `.deb` för Linux, `.AppImage`, eller `.msi`/`.exe` för Windows). För att göra detta på din egen dator:
+1.  Öppna terminalen i mappen `VideoClipper/src-tauri`.
+2.  Kör kommandot:
+    ```bash
+    npm run tauri build
+    ```
+    *(Eller `cargo tauri build` om du har Tauri CLI installerat).*
+Detta kommer att generera färdiga paket i mappen `src-tauri/target/release/bundle`. Dessa filer kan du sedan kopiera till vilken dator som helst och köra för att installera programmet med ikon och alla rättigheter.
+### 2. Det snabba sättet (Kopiera mappen)
+Om du bara vill köra det på en annan Linux-maskin utan att skapa ett installerbart paket:
+1.  Kopiera hela mappen `VideoClipper` till den andra datorn.
+2.  Gå in i `src-tauri` och kör `cargo build --release`.
+3.  Skapa en `.desktop`-fil (som jag gjorde i work-mappen) för att få med ikonen på skrivbordet/menyn.
+**Sammanfattningsvis:** Om du vill ha en "riktig" installation som känns som ett vanligt program, använd **metod 1**. Det skapar en fil som installerar allt (inklusive ikon och rättigheter) automatiskt.
