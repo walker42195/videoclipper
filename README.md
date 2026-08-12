@@ -29,6 +29,17 @@ pnpm tauri build --bundles appimage   # Linux (AppImage)
 pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis   # Windows, cross-compiled from Linux
 ```
 
+## Installing on Linux (Desktop Menu Shortcut)
+
+To install VideoClipper locally to `~/.local/bin` and add a desktop shortcut to your application menu:
+
+```bash
+scripts/install.sh
+```
+
+This script builds the release binary (if not already built), places the executable and icon in `~/.local/`, and registers `videoclipper.desktop` with your desktop environment.
+
+
 ## Building on Windows
 
 To compile natively on Windows (rather than cross-compiling from Linux):
