@@ -362,7 +362,7 @@ async fn run_export(
     args.push(request.output_path.clone());
 
     let shell = app.shell();
-    let sidecar = match shell.sidecar("ffmpeg") {
+    let sidecar = match shell.sidecar("ffmpeg").or_else(|_| shell.sidecar("binaries/ffmpeg")) {
         Ok(s) => s,
         Err(e) => {
             cleanup_text_cards();

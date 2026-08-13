@@ -80,6 +80,7 @@ function App() {
     localStorage.setItem(LAST_IMPORT_DIR_KEY, await dirname(paths[0]));
 
     setStatusMessage(`Läser in ${paths.length} klipp...`);
+    let hasError = false;
     for (const path of paths) {
       try {
         const meta = await probeClip(path);
@@ -95,10 +96,14 @@ function App() {
         };
         addClip(clip);
       } catch (err) {
+        hasError = true;
         setStatusMessage(`Kunde inte läsa in ${fileNameFromPath(path)}: ${err}`);
+        console.error("probeClip error:", err);
       }
     }
-    setStatusMessage("");
+    if (!hasError) {
+      setStatusMessage("");
+    }
   }
 
   async function handleAddImage() {

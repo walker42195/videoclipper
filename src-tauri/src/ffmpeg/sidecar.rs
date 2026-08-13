@@ -13,9 +13,11 @@ pub async fn run_sidecar_capture_bytes(
     args: Vec<String>,
 ) -> Result<(Vec<u8>, String, bool), String> {
     let shell = app.shell();
+    let alt_name = format!("binaries/{name}");
     let sidecar = shell
         .sidecar(name)
-        .map_err(|e| format!("failed to resolve sidecar '{name}': {e}"))?;
+        .or_else(|_| shell.sidecar(&alt_name))
+        .map_err(|e| format!("failed to resolve sidecar '{name}' / '{alt_name}': {e}"))?;
     let (mut rx, _child) = sidecar
         .args(args)
         .spawn()

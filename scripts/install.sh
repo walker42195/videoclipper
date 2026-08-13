@@ -17,13 +17,27 @@ if [ ! -f "$BINARY" ]; then
 fi
 
 echo "Skapar installationsmappar..."
-mkdir -p "$HOME/.local/bin"
+mkdir -p "$HOME/.local/bin/binaries"
+mkdir -p "$HOME/.local/bin/resources"
 mkdir -p "$HOME/.local/share/icons/hicolor/128x128/apps"
 mkdir -p "$HOME/.local/share/applications"
 
-echo "Kopierar programfil och ikon..."
+echo "Kopierar programfil, sidecars (ffmpeg/ffprobe) och ikon..."
 cp "$BINARY" "$HOME/.local/bin/videoclipper"
 chmod +x "$HOME/.local/bin/videoclipper"
+if [ -d "$PROJECT_DIR/src-tauri/binaries" ]; then
+    cp -r "$PROJECT_DIR/src-tauri/binaries"/* "$HOME/.local/bin/binaries/"
+    cp -r "$PROJECT_DIR/src-tauri/binaries"/* "$HOME/.local/bin/"
+    if [ -f "$HOME/.local/bin/ffmpeg-x86_64-unknown-linux-gnu" ]; then
+        ln -sf "$HOME/.local/bin/ffmpeg-x86_64-unknown-linux-gnu" "$HOME/.local/bin/ffmpeg"
+        ln -sf "$HOME/.local/bin/ffprobe-x86_64-unknown-linux-gnu" "$HOME/.local/bin/ffprobe"
+        ln -sf "$HOME/.local/bin/ffmpeg-x86_64-unknown-linux-gnu" "$HOME/.local/bin/binaries/ffmpeg"
+        ln -sf "$HOME/.local/bin/ffprobe-x86_64-unknown-linux-gnu" "$HOME/.local/bin/binaries/ffprobe"
+    fi
+fi
+if [ -d "$PROJECT_DIR/src-tauri/resources" ]; then
+    cp -r "$PROJECT_DIR/src-tauri/resources"/* "$HOME/.local/bin/resources/"
+fi
 cp "$ICON" "$HOME/.local/share/icons/hicolor/128x128/apps/videoclipper.png"
 
 echo "Skapar genväg (.desktop-fil) i startmenyn..."
@@ -32,6 +46,7 @@ cat << EOF > "$HOME/.local/share/applications/videoclipper.desktop"
 Name=VideoClipper
 Comment=Video Clipper Application
 Exec=$HOME/.local/bin/videoclipper
+Path=$HOME/.local/bin
 Icon=videoclipper
 Type=Application
 Terminal=false

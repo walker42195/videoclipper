@@ -10,11 +10,13 @@
     "fs:default",
     {
       "identifier": "fs:allow-read-file",
-      "allow": [{ "path": "$HOME/**/*" }, { "path": "$APPCACHE/**/*" }]
+      "allow": [{ "path": "$HOME/**/*" }, { "path": "$APPCACHE/**/*" }, { "path": "**" }]
     },
     {
       "identifier": "shell:allow-execute",
       "allow": [
+        { "name": "ffmpeg", "sidecar": true, "args": true },
+        { "name": "ffprobe", "sidecar": true, "args": true },
         { "name": "binaries/ffmpeg", "sidecar": true, "args": true },
         { "name": "binaries/ffprobe", "sidecar": true, "args": true }
       ]
